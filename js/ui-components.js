@@ -36,7 +36,7 @@ export function organizerShell(){
   </nav>
   <div id="app"><div class="loading">Loading…</div></div>`;
   document.getElementById("tabs").addEventListener("click", e=>{
-    const b=e.target.closest(".tab"); if(b) setView(b.dataset.view);
+    const b=e.target.closest(".tab"); if(b){ setView(b.dataset.view); render(); }
   });
   renderModebar();
 }

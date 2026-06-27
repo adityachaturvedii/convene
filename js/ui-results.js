@@ -142,13 +142,16 @@ export function viewResults(){
   const invited = roster.length;
   const pct = invited ? Math.round(respondedNames.length/invited*100) : 0;
 
-  const hero = best
+  // Only celebrate a "Leading time" when a slot actually has Yes votes. A slot
+  // that merely has the most maybes (0 yes) is NOT a winner.
+  const winner = best && best.y>0 ? best : null;
+  const hero = winner
     ? `<div class="res-hero"><div class="lead-k">★ Leading time</div>
-        <div class="lead-t mono">${best.lp.wd} ${best.lp.hh}:${best.lp.mm} · <span style="font-size:15px;font-weight:500">${best.lp.day} ${best.lp.mon} ${esc(refTz.split("/").pop())}</span></div>
-        <div class="lead-s">${best.y} yes${best.m?` · ${best.m} maybe`:""}${best.n?` · ${best.n} no`:""} — out of ${total} response${total===1?"":"s"}</div></div>`
+        <div class="lead-t mono">${winner.lp.wd} ${winner.lp.hh}:${winner.lp.mm} · <span style="font-size:15px;font-weight:500">${winner.lp.day} ${winner.lp.mon} ${esc(refTz.split("/").pop())}</span></div>
+        <div class="lead-s">${winner.y} yes${winner.m?` · ${winner.m} maybe`:""}${winner.n?` · ${winner.n} no`:""} — out of ${total} response${total===1?"":"s"}</div></div>`
     : (total>0
-        ? `<div class="res-hero empty"><div class="lead-k">${total} response${total===1?"":"s"} so far — no clear winner</div>
-            <div class="lead-s">Every answer so far is "No". You likely need different times — see who's free below.</div></div>`
+        ? `<div class="res-hero empty"><div class="lead-k">${total} response${total===1?"":"s"} so far — no clear winner yet</div>
+            <div class="lead-s">No option has a <b>Yes</b> vote yet${best&&best.m?` (best so far: ${best.lp.wd} ${best.lp.hh}:${best.lp.mm} — ${best.m} maybe, ${best.n} no)`:""}. These times may not work — see "Best converging times" below, or add new slots.</div></div>`
         : `<div class="res-hero empty"><div class="lead-k">No responses yet</div>
             <div class="lead-s">Share your invite links (Poll &amp; invite) to start collecting answers.</div></div>`);
 
@@ -202,7 +205,7 @@ export function rankedTally(slots, votes, displayTz, opts){
   const best = rows.length && rows[0].score>0 ? rows[0] : null;
   const w = x => total ? (x/total*100) : 0;
   const cards = rows.map((r,i)=>{
-    const leading = best && r===best;
+    const leading = best && r===best && best.y>0;   // only badge a real winner (has Yes votes)
     let sub;
     if(opts.refTz && opts.refTz!==displayTz){
       const rl = localParts(new Date(r.s.utc), opts.refTz);

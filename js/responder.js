@@ -407,11 +407,12 @@ export const Responder = (() => {
   function buildDashTally(votes){
     const tz = myZoneTz || detectTz();
     const { cards, best, total } = rankedTally(poll.slots||[], votes, tz, { refTz: poll.refTz, mine: me.responses||{} });
-    const hero = best
+    const winner = best && best.y>0 ? best : null;
+    const hero = winner
       ? `<div class="res-hero"><div class="lead-k">★ Leading so far</div>
-          <div class="lead-t mono">${best.lp.wd} ${best.lp.hh}:${best.lp.mm} <span style="font-size:13px;font-weight:400;color:#0a6f60">your time</span></div>
-          <div class="lead-s">${best.y} yes${best.m?` · ${best.m} maybe`:""} of ${total} response${total===1?"":"s"}</div></div>`
-      : (total>0 ? `<div class="res-hero empty"><div class="lead-k">${total} response${total===1?"":"s"} — all "No" so far</div><div class="lead-s">These times don't work for the group yet.</div></div>` : "");
+          <div class="lead-t mono">${winner.lp.wd} ${winner.lp.hh}:${winner.lp.mm} <span style="font-size:13px;font-weight:400;color:#0a6f60">your time</span></div>
+          <div class="lead-s">${winner.y} yes${winner.m?` · ${winner.m} maybe`:""} of ${total} response${total===1?"":"s"}</div></div>`
+      : (total>0 ? `<div class="res-hero empty"><div class="lead-k">${total} response${total===1?"":"s"} — no clear winner yet</div><div class="lead-s">No option has a Yes vote yet. Share your availability above to help find a better time.</div></div>` : "");
     return `<div class="res-prog-lab" style="margin-bottom:10px"><b>${total}</b> ${total===1?"person has":"people have"} responded so far.</div>
       ${hero}${cards||'<p class="note">No votes yet.</p>'}`;
   }
