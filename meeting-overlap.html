@@ -1,0 +1,782 @@
+<!--
+  Cross-Zone Meeting Coordinator
+  ------------------------------------------------------------------
+  Purpose: find the least-cruel common meeting time across timezones
+  (built around the AEST<->CEST overlap, extensible to any zone).
+
+  PORTABILITY / "host elsewhere later":
+  All persistence is behind the Store adapter (see below). It uses
+  window.storage (Claude artifact shared storage) when available and
+  falls back to in-memory otherwise, so this file also runs as a plain
+  static page. To move onto your own backend, replace the four async
+  functions in Store (get/set/del/list) with REST calls. Nothing else
+  in the app touches storage. That is the only swap point.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<style>
+  :root{
+    --paper:#F4F6F7; --panel:#FFFFFF; --ink:#152330; --muted:#67767F;
+    --line:#E2E7EA; --line-strong:#CCD4D8;
+    --work:#0E9C86; --work-bg:#E1F2EE;
+    --edge:#B5790C; --edge-bg:#F7EED7;
+    --off:#CB4D64;  --off-bg:#F8E4E8;
+    --accent:#0C5E78; --accent-bg:#E1EDF1;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 22px 64px;}
+
+  /* header */
+  .masthead{display:flex;align-items:flex-end;justify-content:space-between;
+    gap:16px;flex-wrap:wrap;border-bottom:2px solid var(--ink);padding-bottom:14px;}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--accent);margin:0 0 6px;}
+  h1{font-size:26px;font-weight:600;margin:0;letter-spacing:-.01em;line-height:1.1;}
+  .sub{color:var(--muted);font-size:13px;margin-top:6px;max-width:52ch;line-height:1.45;}
+  .gap-readout{text-align:right;font-family:"IBM Plex Mono",monospace;}
+  .gap-readout .big{font-size:30px;font-weight:500;display:block;line-height:1;}
+  .gap-readout small{color:var(--muted);font-size:11px;letter-spacing:.06em;}
+
+  /* tabs */
+  nav.tabs{display:flex;gap:2px;margin:20px 0 22px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .tab{appearance:none;border:none;background:none;cursor:pointer;
+    font-family:inherit;font-size:13px;font-weight:500;color:var(--muted);
+    padding:10px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;}
+  .tab:hover{color:var(--ink);}
+  .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;margin-bottom:18px;}
+  .panel h2{font-size:13px;font-weight:600;margin:0 0 4px;letter-spacing:.02em;}
+  .panel .note{color:var(--muted);font-size:12.5px;margin:0 0 16px;line-height:1.5;}
+  .section-num{font-family:"IBM Plex Mono",monospace;color:var(--accent);
+    font-size:11px;letter-spacing:.1em;}
+
+  /* board */
+  .board-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;}
+  table.board{border-collapse:collapse;width:100%;min-width:760px;font-family:"IBM Plex Mono",monospace;}
+  table.board th,table.board td{padding:0;text-align:center;font-size:11.5px;font-weight:400;}
+  .b-zonecol{position:sticky;left:0;background:var(--panel);text-align:left;
+    padding:8px 12px!important;min-width:172px;border-right:1px solid var(--line-strong);
+    font-family:"IBM Plex Sans",sans-serif;z-index:2;}
+  .b-zonecol .zname{font-size:12px;font-weight:600;}
+  .b-zonecol .ztz{font-size:10.5px;color:var(--muted);}
+  thead .b-hour{padding:6px 0 4px;color:var(--muted);font-size:10.5px;border-bottom:1px solid var(--line);}
+  .b-overlap-row td{height:7px;}
+  .b-mark-work{background:var(--work);}
+  .b-mark-edge{background:var(--edge);}
+  td.cell{height:34px;border-left:1px solid #EFF2F3;border-bottom:1px solid #EFF2F3;color:#46545d;}
+  td.cell.work{background:var(--work-bg);color:#0a6f60;}
+  td.cell.edge{background:var(--edge-bg);color:#8a5c06;}
+  td.cell.off{background:var(--off-bg);color:#a23a4e;}
+  td.cell.pinned{box-shadow:inset 0 0 0 2px var(--accent);font-weight:500;}
+  .pin-flag{font-family:"IBM Plex Sans";font-size:11px;color:var(--accent);font-weight:600;
+    display:inline-flex;align-items:center;gap:6px;margin-top:12px;}
+  .pin-dot{width:9px;height:9px;border:2px solid var(--accent);border-radius:50%;}
+
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:12px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .sw.work{background:var(--work-bg);border:1px solid var(--work);}
+  .sw.edge{background:var(--edge-bg);border:1px solid var(--edge);}
+  .sw.off{background:var(--off-bg);border:1px solid var(--off);}
+
+  /* recommendation strip */
+  .rec-headline{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px;}
+  .rec-time{font-family:"IBM Plex Mono",monospace;font-size:28px;font-weight:500;}
+  .rec-day{font-size:14px;color:var(--muted);}
+  .strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:16px;}
+  .chip{border:1px solid var(--line);border-radius:8px;padding:10px 12px;}
+  .chip .czone{font-size:11px;color:var(--muted);font-weight:500;}
+  .chip .ctime{font-family:"IBM Plex Mono",monospace;font-size:17px;margin-top:2px;}
+  .chip .ctag{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin-top:4px;}
+  .chip.work{background:var(--work-bg);border-color:#bfe5dd;} .chip.work .ctag{color:#0a6f60;}
+  .chip.edge{background:var(--edge-bg);border-color:#e8d7a8;} .chip.edge .ctag{color:#8a5c06;}
+  .chip.off{background:var(--off-bg);border-color:#eecdd4;} .chip.off .ctag{color:#a23a4e;}
+
+  .warn{display:flex;gap:10px;align-items:flex-start;background:#FBF1E0;
+    border:1px solid #E8D7A8;border-radius:8px;padding:12px 14px;margin-top:18px;font-size:13px;line-height:1.5;}
+  .warn .wicon{color:var(--edge);font-weight:700;font-family:"IBM Plex Mono";}
+  .ok{background:var(--work-bg);border-color:#bfe5dd;}
+  .ok .wicon{color:var(--work);}
+
+  /* poll */
+  .slot-row{border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:10px;}
+  .slot-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;}
+  .slot-when{font-family:"IBM Plex Mono",monospace;font-size:15px;}
+  .slot-when small{color:var(--muted);font-size:12px;}
+  .slot-yours{font-size:12px;color:var(--muted);margin-top:3px;}
+  .seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;}
+  .seg button{appearance:none;border:none;background:var(--panel);cursor:pointer;
+    font-family:inherit;font-size:12px;font-weight:500;padding:7px 13px;color:var(--muted);
+    border-left:1px solid var(--line);}
+  .seg button:first-child{border-left:none;}
+  .seg button[data-on="yes"]{background:var(--work);color:#fff;}
+  .seg button[data-on="maybe"]{background:var(--edge);color:#fff;}
+  .seg button[data-on="no"]{background:var(--off);color:#fff;}
+  .minstrip{display:flex;gap:5px;margin-top:10px;flex-wrap:wrap;}
+  .ministub{font-family:"IBM Plex Mono",monospace;font-size:10.5px;padding:3px 7px;border-radius:5px;border:1px solid var(--line);color:var(--muted);}
+  .ministub.work{background:var(--work-bg);color:#0a6f60;border-color:#bfe5dd;}
+  .ministub.edge{background:var(--edge-bg);color:#8a5c06;border-color:#e8d7a8;}
+  .ministub.off{background:var(--off-bg);color:#a23a4e;border-color:#eecdd4;}
+
+  .tally{display:flex;gap:3px;margin-top:12px;height:8px;border-radius:4px;overflow:hidden;background:#EEF1F2;}
+  .tally i{display:block;height:100%;}
+  .tally .ty{background:var(--work);} .tally .tm{background:var(--edge);} .tally .tn{background:var(--off);}
+  .tally-labels{font-size:11.5px;color:var(--muted);margin-top:6px;font-family:"IBM Plex Mono";}
+  .awaiting{font-size:12px;color:var(--off);margin-top:8px;}
+  .awaiting b{color:var(--ink);font-weight:500;}
+  .best-tag{font-size:10.5px;font-weight:600;color:#fff;background:var(--accent);
+    padding:2px 8px;border-radius:20px;letter-spacing:.04em;}
+
+  /* forms */
+  label.fld{display:block;font-size:11.5px;color:var(--muted);font-weight:500;margin:0 0 4px;}
+  input[type=text],input[type=date],input[type=time],input[type=number],select{
+    font-family:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--line-strong);
+    border-radius:7px;background:var(--panel);color:var(--ink);width:100%;}
+  input:focus,select:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent);}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;}
+  .row > div{flex:1;min-width:120px;}
+  button.btn{appearance:none;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;
+    border:1px solid var(--accent);background:var(--accent);color:#fff;padding:9px 16px;border-radius:7px;}
+  button.btn.ghost{background:var(--panel);color:var(--accent);}
+  button.btn.danger{background:var(--panel);color:var(--off);border-color:var(--off);}
+  button.btn:hover{filter:brightness(.96);}
+  button.link{appearance:none;border:none;background:none;color:var(--muted);cursor:pointer;
+    font-family:inherit;font-size:12px;text-decoration:underline;padding:0;}
+  button.link:hover{color:var(--off);}
+  table.list{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;}
+  table.list td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  table.list td:last-child{text-align:right;width:1%;white-space:nowrap;}
+  .pill{display:inline-block;font-family:"IBM Plex Mono";font-size:11px;padding:2px 8px;
+    border-radius:20px;background:var(--accent-bg);color:var(--accent);}
+
+  .loading{padding:60px 0;text-align:center;color:var(--muted);font-family:"IBM Plex Mono";font-size:13px;}
+  .storage-note{font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.5;}
+  .hide{display:none!important;}
+  @media (max-width:560px){
+    h1{font-size:21px;} .gap-readout{text-align:left;} .masthead{align-items:flex-start;}
+    .rec-time{font-size:23px;}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <p class="eyebrow" id="eyebrow">Cross-zone scheduling</p>
+      <h1 id="title">Loading…</h1>
+      <p class="sub" id="subline"></p>
+    </div>
+    <div class="gap-readout">
+      <span class="big mono" id="gapBig">—</span>
+      <small id="gapLabel">offset today</small>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="overlap" aria-selected="true">Overlap board</button>
+    <button class="tab" role="tab" data-view="recurring" aria-selected="false">Recurring slot</button>
+    <button class="tab" role="tab" data-view="poll" aria-selected="false">Ad-hoc poll</button>
+    <button class="tab" role="tab" data-view="setup" aria-selected="false">Setup</button>
+  </nav>
+
+  <div id="app"><div class="loading">Loading shared schedule…</div></div>
+</div>
+
+<script>
+"use strict";
+
+/* ====================================================================
+   1. STORE ADAPTER  — the only place that touches persistence.
+   Uses Claude artifact shared storage when present, else in-memory.
+   Replace get/set/del/list with REST calls to self-host.
+   ==================================================================== */
+const Store = (() => {
+  const SHARED = true;
+  const hasNative = typeof window !== "undefined" && window.storage
+    && typeof window.storage.get === "function";
+  const mem = new Map();
+  async function get(k){
+    if(!hasNative) return mem.has(k) ? JSON.parse(mem.get(k)) : null;
+    try{ const r = await window.storage.get(k, SHARED); return r ? JSON.parse(r.value) : null; }
+    catch(e){ return null; }
+  }
+  async function set(k, v){
+    const s = JSON.stringify(v);
+    if(!hasNative){ mem.set(k, s); return true; }
+    try{ return !!(await window.storage.set(k, s, SHARED)); } catch(e){ return false; }
+  }
+  async function del(k){
+    if(!hasNative){ mem.delete(k); return; }
+    try{ await window.storage.delete(k, SHARED); } catch(e){}
+  }
+  async function list(pfx){
+    if(!hasNative) return [...mem.keys()].filter(x => x.startsWith(pfx));
+    try{ const r = await window.storage.list(pfx, SHARED); return r ? r.keys : []; }
+    catch(e){ return []; }
+  }
+  return { get, set, del, list, native: hasNative };
+})();
+const LOCAL_KEY = "myParticipantId"; // not shared: this browser's identity
+
+/* ====================================================================
+   2. TIMEZONE PRIMITIVES (verified against Intl tz database)
+   ==================================================================== */
+const WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function tzOffsetMin(tz, date){
+  const dtf = new Intl.DateTimeFormat("en-US",{timeZone:tz,hour12:false,
+    year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const p = {}; for(const x of dtf.formatToParts(date)) if(x.type!=="literal") p[x.type]=x.value;
+  let h = parseInt(p.hour,10); if(h===24) h=0;
+  const asUTC = Date.UTC(+p.year, +p.month-1, +p.day, h, +p.minute, +p.second);
+  return Math.round((asUTC - date.getTime())/60000);
+}
+function zonedWallToUtc(y,mo,d,h,mi,tz){
+  const guess = Date.UTC(y,mo-1,d,h,mi);
+  let off = tzOffsetMin(tz, new Date(guess));
+  let utc = guess - off*60000;
+  off = tzOffsetMin(tz, new Date(utc));       // second pass: DST-boundary safe
+  utc = guess - off*60000;
+  return new Date(utc);
+}
+function localParts(date, tz){
+  const dtf = new Intl.DateTimeFormat("en-GB",{timeZone:tz,weekday:"short",
+    day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false});
+  const p = {}; for(const x of dtf.formatToParts(date)) if(x.type!=="literal") p[x.type]=x.value;
+  let h = parseInt(p.hour,10); if(h===24) h=0;
+  const m = parseInt(p.minute,10);
+  return { min:h*60+m, hh:String(h).padStart(2,"0"), mm:String(m).padStart(2,"0"),
+           wd:p.weekday, day:p.day, mon:p.month };
+}
+function refWeekday(y,m,d,tz){
+  const utc = zonedWallToUtc(y,m,d,12,0,tz);
+  return WD.indexOf(new Intl.DateTimeFormat("en-US",{timeZone:tz,weekday:"short"}).format(utc));
+}
+function nearestWeekdayDate(y,m,d,target,tz){
+  for(let off=0;off<7;off++){
+    const dt = new Date(Date.UTC(y,m-1,d+off));
+    if(refWeekday(dt.getUTCFullYear(),dt.getUTCMonth()+1,dt.getUTCDate(),target,tz)===target)
+      return {y:dt.getUTCFullYear(),m:dt.getUTCMonth()+1,d:dt.getUTCDate()};
+  }
+  return {y,m,d};
+}
+const fmtMin = m => String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");
+
+/* comfort classification: work | edge (shoulder) | off (night) */
+function classify(localMin, z){
+  if(localMin>=z.ws && localMin<z.we) return "work";
+  if((localMin>=z.ws-90 && localMin<z.ws) || (localMin>=z.we && localMin<z.we+120)) return "edge";
+  return "off";
+}
+const CLASS_LABEL = {work:"Working hrs", edge:"Edge of day", off:"Outside hrs"};
+
+/* ====================================================================
+   3. DEFAULT SEED  (editable in Setup)
+   ==================================================================== */
+const DEFAULTS = {
+  meta:{ title:"TENACITY · adjudication sync", refTz:"Europe/Berlin", weekday:2, duration:60 },
+  zones:[
+    {id:"z_cest", label:"CEST · Biberach / Budapest", tz:"Europe/Berlin",       ws:8*60, we:18*60},
+    {id:"z_aest", label:"AEST · Proxmed (Melbourne)", tz:"Australia/Melbourne",  ws:8*60, we:18*60},
+    {id:"z_ist",  label:"IST · You (Delhi)",          tz:"Asia/Kolkata",         ws:9*60, we:19*60},
+  ],
+  roster:[
+    {id:"r1", name:"Adelheid Orend",   zoneId:"z_cest"},
+    {id:"r2", name:"Zita Mehesz",      zoneId:"z_cest"},
+    {id:"r3", name:"Doris Zimmermann", zoneId:"z_cest"},
+    {id:"r4", name:"Gagan Sharma",     zoneId:"z_aest"},
+    {id:"r5", name:"Niruta Dhimal",    zoneId:"z_aest"},
+    {id:"r6", name:"Aditya Chaturvedi",zoneId:"z_ist"},
+  ],
+  slots:[] // candidate poll slots seeded at load relative to "now"
+};
+
+const COMMON_TZS = ["Europe/Berlin","Europe/Budapest","Australia/Melbourne","Australia/Sydney",
+  "Asia/Kolkata","Asia/Tokyo","Asia/Shanghai","Europe/London","America/New_York","America/Los_Angeles","UTC"];
+
+/* ====================================================================
+   4. STATE
+   ==================================================================== */
+let state = { meta:null, zones:[], roster:[], slots:[], votes:{}, me:null };
+let view = "overlap";
+const uid = () => Math.random().toString(36).slice(2,9);
+
+async function loadAll(){
+  state.meta   = await Store.get("meta")   || {...DEFAULTS.meta};
+  state.zones  = await Store.get("zones")  || DEFAULTS.zones.map(z=>({...z}));
+  state.roster = await Store.get("roster") || DEFAULTS.roster.map(r=>({...r}));
+  state.slots  = await Store.get("slots");
+  if(!state.slots){ state.slots = seedSlots(); await Store.set("slots", state.slots); }
+  // votes
+  state.votes = {};
+  for(const key of await Store.list("vote:")){
+    const v = await Store.get(key); if(v) state.votes[v.pid] = v;
+  }
+  // local identity
+  let pid = null;
+  try{ const r = await window.storage?.get(LOCAL_KEY, false); pid = r ? JSON.parse(r.value) : null; }catch(e){}
+  if(pid && state.votes[pid]) state.me = state.votes[pid];
+  else state.me = { pid: pid || ("p_"+uid()), name:"", zoneId: state.zones[0]?.id, responses:{} };
+}
+function seedSlots(){
+  // three concrete candidates anchored to the next recurring weekday in CEST
+  const wd = DEFAULTS.meta.weekday, refTz = DEFAULTS.meta.refTz;
+  const now = new Date();
+  const base = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate()+3, wd, refTz);
+  const mk = (h,m,lbl) => ({ id:"s_"+uid(),
+    utc: zonedWallToUtc(base.y,base.m,base.d,h,m,refTz).toISOString(), label:lbl });
+  return [ mk(9,0,"Inside overlap"), mk(11,0,"Current proposal"), mk(8,30,"Early CEST") ];
+}
+async function saveMeta(){ await Store.set("meta", state.meta); }
+async function saveZones(){ await Store.set("zones", state.zones); }
+async function saveRoster(){ await Store.set("roster", state.roster); }
+async function saveSlots(){ await Store.set("slots", state.slots); }
+async function saveMe(){
+  state.me.responses = state.me.responses || {};
+  state.votes[state.me.pid] = state.me;
+  await Store.set("vote:"+state.me.pid, state.me);
+  try{ await window.storage?.set(LOCAL_KEY, JSON.stringify(state.me.pid), false); }catch(e){}
+}
+
+/* ====================================================================
+   5. HELPERS
+   ==================================================================== */
+const zoneById = id => state.zones.find(z=>z.id===id);
+const peopleInZone = id => state.roster.filter(r=>r.zoneId===id).length;
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function currentGap(){
+  const cest = state.zones.find(z=>z.tz==="Europe/Berlin") || state.zones[0];
+  const aest = state.zones.find(z=>z.tz==="Australia/Melbourne") || state.zones[1] || state.zones[0];
+  if(!cest || !aest) return null;
+  const now = new Date();
+  const g = (tzOffsetMin(aest.tz,now) - tzOffsetMin(cest.tz,now))/60;
+  return { hours:g, a:aest, b:cest };
+}
+
+function computeRecommendation(weekday){
+  const refTz = state.meta.refTz;
+  const now = new Date();
+  const sd = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate(), weekday, refTz);
+  let best = null;
+  for(let t=6*60; t<=20*60; t+=30){
+    const utc = zonedWallToUtc(sd.y,sd.m,sd.d,Math.floor(t/60),t%60,refTz);
+    let score=0, work=0;
+    for(const z of state.zones){
+      const c = classify(localParts(utc,z.tz).min, z);
+      const n = Math.max(1, peopleInZone(z.id));
+      score += (c==="work"?2:c==="edge"?1:-3)*n;
+      if(c==="work") work++;
+    }
+    if(!best || score>best.score || (score===best.score && work>best.work))
+      best = {t, utc, score, work};
+  }
+  return best;
+}
+
+/* ====================================================================
+   6. RENDER
+   ==================================================================== */
+const app = () => document.getElementById("app");
+
+function renderHeader(){
+  document.getElementById("title").textContent = state.meta.title;
+  document.getElementById("subline").textContent =
+    "Find the least-cruel common slot. Working hours are shaded per zone; the overlap is where everyone is awake and at work.";
+  const g = currentGap();
+  if(g){
+    document.getElementById("gapBig").textContent = (g.hours>0?"+":"")+g.hours+"h";
+    document.getElementById("gapLabel").textContent =
+      g.a.tz.split("/").pop()+" vs "+g.b.tz.split("/").pop()+" today";
+  }
+}
+
+function setView(v){
+  view = v;
+  document.querySelectorAll(".tab").forEach(t =>
+    t.setAttribute("aria-selected", String(t.dataset.view===v)));
+  render();
+}
+
+function render(){
+  renderHeader();
+  if(view==="overlap")   app().innerHTML = viewOverlap();
+  if(view==="recurring") app().innerHTML = viewRecurring();
+  if(view==="poll"){ app().innerHTML = viewPoll(); wirePoll(); }
+  if(view==="setup"){ app().innerHTML = viewSetup(); wireSetup(); }
+}
+
+/* ---- Overlap board -------------------------------------------------- */
+function viewOverlap(){
+  const refTz = state.meta.refTz, weekday = state.meta.weekday;
+  const now = new Date();
+  const day = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate(), weekday, refTz);
+  const startH=0, endH=24;
+  const rec = computeRecommendation(weekday);
+  const pinHour = rec ? Math.round(rec.t/60) : -1;
+
+  // precompute per-column utc + per-zone class
+  const cols = [];
+  for(let h=startH; h<endH; h++){
+    const utc = zonedWallToUtc(day.y,day.m,day.d,h,0,refTz);
+    const cells = state.zones.map(z=>{
+      const lp = localParts(utc,z.tz);
+      return { c:classify(lp.min,z), t:lp.hh+":"+lp.mm };
+    });
+    const allWork = cells.every(c=>c.c==="work");
+    const allOk   = cells.every(c=>c.c!=="off");
+    cols.push({h, cells, allWork, allOk});
+  }
+
+  let head = `<th class="b-zonecol">Zone</th>`;
+  cols.forEach(c => head += `<th class="b-hour">${String(c.h).padStart(2,"0")}</th>`);
+
+  let overlapRow = `<td class="b-zonecol" style="border-bottom:none"></td>`;
+  cols.forEach(c => overlapRow +=
+    `<td class="${c.allWork?"b-mark-work":(c.allOk?"b-mark-edge":"")}"></td>`);
+
+  let body = "";
+  state.zones.forEach((z,zi)=>{
+    let row = `<td class="b-zonecol"><div class="zname">${esc(z.label)}</div>
+      <div class="ztz mono">${esc(z.tz.split("/").pop())} · ${fmtMin(z.ws)}–${fmtMin(z.we)}</div></td>`;
+    cols.forEach(c=>{
+      const cell = c.cells[zi];
+      const pin = c.h===pinHour ? " pinned" : "";
+      row += `<td class="cell ${cell.c}${pin}">${cell.t}</td>`;
+    });
+    body += `<tr>${row}</tr>`;
+  });
+
+  const recTxt = rec
+    ? `Recommended recurring slot sits at <b class="mono">${fmtMin(rec.t)} ${refTz.split("/").pop()}</b> on ${WD[weekday]}day — the ${rec.work}-of-${state.zones.length}-zone best. See the Recurring tab.`
+    : "";
+
+  return `
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <h2><span class="section-num">01 · </span>Where the day actually overlaps</h2>
+      <span class="mono" style="font-size:12px;color:var(--muted)">${WD[weekday]} · columns = ${refTz.split("/").pop()} hours</span>
+    </div>
+    <p class="note">Each cell is the local clock time in that zone. The thin bar on top lights
+      <b style="color:var(--work)">green</b> where everyone is in working hours,
+      <b style="color:var(--edge)">amber</b> where it's the edge of someone's day but nobody is asleep.</p>
+    <div class="board-scroll">
+      <table class="board">
+        <thead><tr>${head}</tr></thead>
+        <tbody>
+          <tr class="b-overlap-row">${overlapRow}</tr>
+          ${body}
+        </tbody>
+      </table>
+    </div>
+    <div class="pin-flag"><span class="pin-dot"></span>${recTxt}</div>
+    <div class="legend">
+      <span><i class="sw work"></i> Working hours</span>
+      <span><i class="sw edge"></i> Edge of day (early / late)</span>
+      <span><i class="sw off"></i> Outside hours / night</span>
+    </div>
+  </div>`;
+}
+
+/* ---- Recurring recommendation + DST check --------------------------- */
+function viewRecurring(){
+  const refTz = state.meta.refTz, weekday = state.meta.weekday;
+  const rec = computeRecommendation(weekday);
+  if(!rec) return `<div class="panel"><p class="note">Add at least one zone in Setup.</p></div>`;
+
+  const wallH = Math.floor(rec.t/60), wallM = rec.t%60;
+
+  const stripFor = (utc) => state.zones.map(z=>{
+    const lp = localParts(utc,z.tz); const c = classify(lp.min,z);
+    return `<div class="chip ${c}"><div class="czone">${esc(z.label)}</div>
+      <div class="ctime mono">${lp.wd} ${lp.hh}:${lp.mm}</div>
+      <div class="ctag">${CLASS_LABEL[c]}</div></div>`;
+  }).join("");
+
+  // summer (now-ish) vs winter (mid-Dec) for the SAME wall-clock time
+  const now = new Date();
+  const sd = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate(), weekday, refTz);
+  const summerUtc = zonedWallToUtc(sd.y,sd.m,sd.d,wallH,wallM,refTz);
+  const wd2 = nearestWeekdayDate(2026,12,10,weekday,refTz);
+  const winterUtc = zonedWallToUtc(wd2.y,wd2.m,wd2.d,wallH,wallM,refTz);
+
+  // DST drift detection
+  let drift = [];
+  state.zones.forEach(z=>{
+    const cs = classify(localParts(summerUtc,z.tz).min,z);
+    const cw = classify(localParts(winterUtc,z.tz).min,z);
+    if(cs!==cw){
+      const lw = localParts(winterUtc,z.tz);
+      drift.push(`${z.tz.split("/").pop()} becomes <b class="mono">${lw.hh}:${lw.mm}</b> (${CLASS_LABEL[cw].toLowerCase()})`);
+    }
+  });
+  const driftBanner = drift.length
+    ? `<div class="warn"><span class="wicon">!</span><div><b>DST drift.</b> Europe and Australia shift clocks in
+        opposite directions. A fixed wall-clock time rots across the year — by mid-December:
+        ${drift.join("; ")}. Consider re-anchoring the slot each DST season, or pinning to UTC.</div></div>`
+    : `<div class="warn ok"><span class="wicon">✓</span><div>This slot holds its comfort profile across the
+        summer/winter DST shift. Safe to set as a standing wall-clock time.</div></div>`;
+
+  return `
+  <div class="panel">
+    <h2><span class="section-num">02 · </span>Best standing weekly slot</h2>
+    <p class="note">Searched 06:00–20:00 ${refTz.split("/").pop()} on ${WD[weekday]}day, scored by how many
+      people land in working hours (night times penalised). Change the day in Setup.</p>
+    <div class="rec-headline">
+      <span class="rec-time mono">${fmtMin(rec.t)}</span>
+      <span class="rec-day">${refTz.split("/").pop()} · every ${WD[weekday]}day · ${state.meta.duration} min</span>
+    </div>
+    <div class="strip">${stripFor(rec.utc)}</div>
+    ${driftBanner}
+  </div>`;
+}
+
+/* ---- Ad-hoc poll ---------------------------------------------------- */
+function viewPoll(){
+  const me = state.me;
+  const myZone = zoneById(me.zoneId) || state.zones[0];
+
+  const ident = `
+  <div class="panel">
+    <h2><span class="section-num">03 · </span>Your response</h2>
+    <p class="note">Pick the slots that work for you. Times below are shown in your own zone.</p>
+    <div class="row">
+      <div><label class="fld">Your name</label>
+        <input type="text" id="meName" value="${esc(me.name)}" placeholder="e.g. Aditya Chaturvedi"></div>
+      <div><label class="fld">Your zone</label>
+        <select id="meZone">${state.zones.map(z=>
+          `<option value="${z.id}" ${z.id===me.zoneId?"selected":""}>${esc(z.label)}</option>`).join("")}</select></div>
+    </div>
+  </div>`;
+
+  const slots = [...state.slots].sort((a,b)=>a.utc.localeCompare(b.utc));
+  const slotCards = slots.map(s=>{
+    const utc = new Date(s.utc);
+    const refLp = localParts(utc, state.meta.refTz);
+    const myLp = localParts(utc, myZone.tz);
+    const myC = classify(myLp.min, myZone);
+    const resp = me.responses?.[s.id] || null;
+    const seg = ["yes","maybe","no"].map(opt=>{
+      const labels={yes:"Yes",maybe:"Maybe",no:"No"};
+      return `<button data-slot="${s.id}" data-resp="${opt}" ${resp===opt?`data-on="${opt}"`:""}>${labels[opt]}</button>`;
+    }).join("");
+    const mini = state.zones.map(z=>{
+      const lp=localParts(utc,z.tz); const c=classify(lp.min,z);
+      return `<span class="ministub ${c}">${z.tz.split("/").pop()} ${lp.hh}:${lp.mm}</span>`;
+    }).join("");
+    return `
+    <div class="slot-row">
+      <div class="slot-head">
+        <div>
+          <div class="slot-when mono">${refLp.wd} ${refLp.day} ${refLp.mon} · ${refLp.hh}:${refLp.mm}
+            <small>${state.meta.refTz.split("/").pop()}${s.label?" · "+esc(s.label):""}</small></div>
+          <div class="slot-yours">In your zone: <b class="mono">${myLp.hh}:${myLp.mm}</b> — ${CLASS_LABEL[myC].toLowerCase()}</div>
+        </div>
+        <div class="seg">${seg}</div>
+      </div>
+      <div class="minstrip">${mini}</div>
+    </div>`;
+  }).join("");
+
+  // results
+  const results = slots.map(s=>{
+    let y=0,m=0,n=0; const voters=new Set();
+    Object.values(state.votes).forEach(v=>{
+      const r=v.responses?.[s.id];
+      if(r){ voters.add((v.name||"").trim().toLowerCase()); if(r==="yes")y++; else if(r==="maybe")m++; else n++; }
+    });
+    const total=Math.max(1,y+m+n);
+    const utc=new Date(s.utc); const lp=localParts(utc,state.meta.refTz);
+    const awaiting = state.roster.filter(r=>!voters.has(r.name.trim().toLowerCase())).map(r=>r.name);
+    return { s, y,m,n, lp, awaiting, score: y*2+m };
+  });
+  const bestScore = Math.max(...results.map(r=>r.score), -1);
+  const resultCards = results.map(r=>{
+    const total=Math.max(1,r.y+r.m+r.n);
+    const isBest = r.score===bestScore && r.score>0;
+    return `
+    <div class="slot-row" ${isBest?'style="border-color:var(--accent)"':''}>
+      <div class="slot-head">
+        <div class="slot-when mono">${r.lp.wd} ${r.lp.day} ${r.lp.mon} · ${r.lp.hh}:${r.lp.mm}
+          <small>${state.meta.refTz.split("/").pop()}${r.s.label?" · "+esc(r.s.label):""}</small></div>
+        ${isBest?'<span class="best-tag">Leading</span>':''}
+      </div>
+      <div class="tally">
+        <i class="ty" style="flex:${r.y}"></i><i class="tm" style="flex:${r.m}"></i>
+        <i class="tn" style="flex:${r.n}"></i><i style="flex:${Math.max(0,0.001)}"></i>
+      </div>
+      <div class="tally-labels">${r.y} yes · ${r.m} maybe · ${r.n} no</div>
+      ${r.awaiting.length?`<div class="awaiting">Awaiting: <b>${r.awaiting.map(esc).join(", ")}</b></div>`:
+        `<div class="awaiting" style="color:var(--work)">Everyone on the roster has responded.</div>`}
+    </div>`;
+  }).join("");
+
+  const addForm = `
+  <div class="panel">
+    <h2>Add a candidate slot</h2>
+    <p class="note">Enter the time in ${state.meta.refTz.split("/").pop()}; it converts for everyone else automatically.</p>
+    <div class="row">
+      <div><label class="fld">Date</label><input type="date" id="newDate"></div>
+      <div><label class="fld">Time (${state.meta.refTz.split("/").pop()})</label><input type="time" id="newTime" value="09:00"></div>
+      <div><label class="fld">Label (optional)</label><input type="text" id="newLabel" placeholder="e.g. backup"></div>
+      <div style="flex:0"><button class="btn" id="addSlot">Add slot</button></div>
+    </div>
+  </div>`;
+
+  return ident + `
+  <div class="panel"><h2>Candidate slots</h2>${slots.length?slotCards:'<p class="note">No slots yet — add one below.</p>'}</div>
+  ` + addForm + `
+  <div class="panel"><h2>Live results</h2>
+    <p class="note">Tally updates as people respond. "Leading" = most yes-votes (maybe counts half).</p>
+    ${slots.length?resultCards:'<p class="note">Add slots to collect responses.</p>'}
+  </div>`;
+}
+
+function wirePoll(){
+  const nameEl=document.getElementById("meName"), zoneEl=document.getElementById("meZone");
+  if(nameEl) nameEl.addEventListener("change", async e=>{ state.me.name=e.target.value.trim(); await saveMe(); render(); });
+  if(zoneEl) zoneEl.addEventListener("change", async e=>{ state.me.zoneId=e.target.value; await saveMe(); render(); });
+  document.querySelectorAll(".seg button").forEach(b=>{
+    b.addEventListener("click", async ()=>{
+      if(!state.me.name){ alert("Add your name first so your vote is attributed."); document.getElementById("meName")?.focus(); return; }
+      state.me.responses = state.me.responses||{};
+      const sid=b.dataset.slot, r=b.dataset.resp;
+      state.me.responses[sid] = (state.me.responses[sid]===r)? null : r;
+      if(!state.me.responses[sid]) delete state.me.responses[sid];
+      await saveMe(); render();
+    });
+  });
+  const add=document.getElementById("addSlot");
+  if(add) add.addEventListener("click", async ()=>{
+    const d=document.getElementById("newDate").value, t=document.getElementById("newTime").value;
+    if(!d||!t){ alert("Pick a date and time."); return; }
+    const [y,mo,da]=d.split("-").map(Number); const [h,mi]=t.split(":").map(Number);
+    const utc=zonedWallToUtc(y,mo,da,h,mi,state.meta.refTz);
+    state.slots.push({id:"s_"+uid(), utc:utc.toISOString(), label:document.getElementById("newLabel").value.trim()});
+    await saveSlots(); render();
+  });
+}
+
+/* ---- Setup ---------------------------------------------------------- */
+function viewSetup(){
+  const tzOpt = (sel)=>COMMON_TZS.map(t=>`<option value="${t}" ${t===sel?"selected":""}>${t}</option>`).join("");
+  const zoneRows = state.zones.map(z=>`
+    <tr>
+      <td><input type="text" data-zedit="label" data-id="${z.id}" value="${esc(z.label)}" style="min-width:160px"></td>
+      <td><select data-zedit="tz" data-id="${z.id}">${tzOpt(z.tz)}</select></td>
+      <td><input type="time" data-zedit="ws" data-id="${z.id}" value="${fmtMin(z.ws)}" style="width:108px"></td>
+      <td><input type="time" data-zedit="we" data-id="${z.id}" value="${fmtMin(z.we)}" style="width:108px"></td>
+      <td><button class="link" data-zdel="${z.id}">remove</button></td>
+    </tr>`).join("");
+  const rosterRows = state.roster.map(r=>`
+    <tr>
+      <td><input type="text" data-redit="name" data-id="${r.id}" value="${esc(r.name)}"></td>
+      <td><select data-redit="zoneId" data-id="${r.id}">${state.zones.map(z=>
+        `<option value="${z.id}" ${z.id===r.zoneId?"selected":""}>${esc(z.label)}</option>`).join("")}</select></td>
+      <td><button class="link" data-rdel="${r.id}">remove</button></td>
+    </tr>`).join("");
+
+  return `
+  <div class="panel">
+    <h2>Meeting</h2>
+    <div class="row">
+      <div><label class="fld">Title</label><input type="text" id="setTitle" value="${esc(state.meta.title)}"></div>
+      <div><label class="fld">Reference zone</label><select id="setRef">${tzOpt(state.meta.refTz)}</select></div>
+      <div><label class="fld">Cadence day</label><select id="setWd">${WD.map((w,i)=>
+        `<option value="${i}" ${i===state.meta.weekday?"selected":""}>${w}day</option>`).join("")}</select></div>
+      <div><label class="fld">Duration (min)</label><input type="number" id="setDur" value="${state.meta.duration}" min="15" step="15"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Zones &amp; working hours</h2>
+    <p class="note">Working hours drive every comfort colour. Tighten them per zone if a team won't take 18:00 calls.</p>
+    <table class="list"><thead><tr style="font-size:11px;color:var(--muted)">
+      <td>Label</td><td>Timezone</td><td>Work start</td><td>Work end</td><td></td></tr></thead>
+      <tbody>${zoneRows}</tbody></table>
+    <div style="margin-top:12px"><button class="btn ghost" id="addZone">+ Add zone</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>Roster <span class="pill">${state.roster.length} people</span></h2>
+    <p class="note">Used to flag who hasn't responded yet on the poll. Matched to votes by name.</p>
+    <table class="list"><tbody>${rosterRows}</tbody></table>
+    <div style="margin-top:12px"><button class="btn ghost" id="addPerson">+ Add person</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>Data</h2>
+    <p class="storage-note">${Store.native
+      ? "Saved to shared artifact storage — visible to everyone who opens this artifact in their own Claude account. External colleagues (IQVIA / Clario / BI) won't be able to open it until you host it on your own backend; the Store adapter at the top of the file is the single swap point."
+      : "Running without Claude storage — changes are in-memory only and reset on reload. Wire the Store adapter to a backend to persist."}</p>
+    <div style="margin-top:12px"><button class="btn danger" id="resetAll">Reset all data</button></div>
+  </div>`;
+}
+
+function wireSetup(){
+  const bind=(id,key,fn)=>{const el=document.getElementById(id); if(el) el.addEventListener("change",async e=>{
+    state.meta[key]=fn?fn(e.target.value):e.target.value; await saveMeta(); renderHeader();
+    if(key==="weekday"||key==="refTz") render();
+  });};
+  bind("setTitle","title"); bind("setRef","refTz");
+  bind("setWd","weekday",v=>parseInt(v,10)); bind("setDur","duration",v=>parseInt(v,10)||60);
+
+  document.querySelectorAll("[data-zedit]").forEach(el=>el.addEventListener("change",async e=>{
+    const z=zoneById(el.dataset.id); const k=el.dataset.zedit; let v=e.target.value;
+    if(k==="ws"||k==="we"){const[h,m]=v.split(":").map(Number); v=h*60+m;}
+    z[k]=v; await saveZones(); render();
+  }));
+  document.querySelectorAll("[data-zdel]").forEach(b=>b.addEventListener("click",async()=>{
+    if(state.zones.length<=1){alert("Keep at least one zone.");return;}
+    state.zones=state.zones.filter(z=>z.id!==b.dataset.zdel); await saveZones(); render();
+  }));
+  document.getElementById("addZone")?.addEventListener("click",async()=>{
+    state.zones.push({id:"z_"+uid(),label:"New zone",tz:"UTC",ws:9*60,we:17*60}); await saveZones(); render();
+  });
+
+  document.querySelectorAll("[data-redit]").forEach(el=>el.addEventListener("change",async e=>{
+    const r=state.roster.find(x=>x.id===el.dataset.id); r[el.dataset.redit]=e.target.value;
+    await saveRoster(); render();
+  }));
+  document.querySelectorAll("[data-rdel]").forEach(b=>b.addEventListener("click",async()=>{
+    state.roster=state.roster.filter(r=>r.id!==b.dataset.rdel); await saveRoster(); render();
+  }));
+  document.getElementById("addPerson")?.addEventListener("click",async()=>{
+    state.roster.push({id:"r_"+uid(),name:"",zoneId:state.zones[0].id}); await saveRoster(); render();
+  });
+
+  document.getElementById("resetAll")?.addEventListener("click",async()=>{
+    if(!confirm("Reset zones, roster, slots and all votes to defaults?")) return;
+    for(const k of ["meta","zones","roster","slots"]) await Store.del(k);
+    for(const k of await Store.list("vote:")) await Store.del(k);
+    try{ await window.storage?.delete(LOCAL_KEY, false); }catch(e){}
+    await loadAll(); setView("overlap");
+  });
+}
+
+/* ====================================================================
+   7. INIT
+   ==================================================================== */
+document.getElementById("tabs").addEventListener("click", e=>{
+  const b=e.target.closest(".tab"); if(b) setView(b.dataset.view);
+});
+(async function init(){
+  try{ await loadAll(); render(); }
+  catch(err){
+    console.error(err);
+    app().innerHTML = `<div class="panel"><p class="note">Couldn't load the schedule: ${esc(err.message)}.
+      Try the Reset button, or reload.</p></div>`;
+  }
+})();
+</script>

@@ -1,0 +1,1439 @@
+<!--
+  Cross-Zone Meeting Coordinator  (GitHub-native poll edition)
+  ------------------------------------------------------------------
+  Purpose: find the least-cruel common meeting time across timezones,
+  and collect votes from invitees via per-person tokenized invite links.
+
+  ARCHITECTURE (see INTEGRATION CONTRACT):
+  - One PUBLIC GitHub repo. 'main' = this app + workflows (served by Pages
+    as index.html). Orphan branch 'poll-data' = committed poll/vote JSON.
+  - WRITE: browser fires repository_dispatch (event_type "poll-op"); a
+    GitHub Action ingests the client_payload and commits to poll-data.
+  - READ: browser fetches raw.githubusercontent.com (keyless, public).
+  - All persistence is behind the Store adapter (one swap point). It ALWAYS
+    uses localStorage (cache + local-only source of truth) and, when
+    sharedMode, also dispatches writes / fetches reads from GitHub.
+  - If GH.dispatchToken is still the placeholder or empty => LOCAL-ONLY mode:
+    the app fully works locally, shows a notice, makes no network calls.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- responder pages must not leak the ?t= token via Referer -->
+<meta name="referrer" content="no-referrer" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<style>
+  :root{
+    --paper:#F4F6F7; --panel:#FFFFFF; --ink:#152330; --muted:#5A6970;
+    --line:#E2E7EA; --line-strong:#CCD4D8;
+    --work:#0E9C86; --work-bg:#E1F2EE;
+    --edge:#B5790C; --edge-bg:#F7EED7;
+    --off:#CB4D64;  --off-bg:#F8E4E8;
+    --accent:#0C5E78; --accent-bg:#E1EDF1;
+    /* AA>=5.0 active fills for the Yes/Maybe/No segment (white text) */
+    --work-on:#0B7D6C; --edge-on:#8A5C06; --off-on:#B23A4E;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 22px 64px;}
+  .wrap.narrow{max-width:560px;}
+
+  /* header */
+  .masthead{display:flex;align-items:flex-end;justify-content:space-between;
+    gap:16px;flex-wrap:wrap;border-bottom:2px solid var(--ink);padding-bottom:14px;}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--accent);margin:0 0 6px;}
+  h1{font-size:26px;font-weight:600;margin:0;letter-spacing:-.01em;line-height:1.1;}
+  .sub{color:var(--muted);font-size:13px;margin-top:6px;max-width:52ch;line-height:1.45;}
+  .gap-readout{text-align:right;font-family:"IBM Plex Mono",monospace;}
+  .gap-readout .big{font-size:30px;font-weight:500;display:block;line-height:1;}
+  .gap-readout small{color:var(--muted);font-size:11px;letter-spacing:.06em;}
+
+  /* mode banner */
+  .modebar{font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.04em;
+    padding:7px 12px;border-radius:7px;margin:14px 0 0;display:flex;align-items:center;gap:8px;}
+  .modebar.local{background:var(--edge-bg);border:1px solid #e8d7a8;color:#6e4a05;}
+  .modebar.shared{background:var(--work-bg);border:1px solid #bfe5dd;color:#0a6f60;}
+  .modebar .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;}
+  .modebar.local .dot{background:var(--edge);} .modebar.shared .dot{background:var(--work);}
+
+  /* tabs */
+  nav.tabs{display:flex;gap:2px;margin:20px 0 22px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .tab{appearance:none;border:none;background:none;cursor:pointer;
+    font-family:inherit;font-size:13px;font-weight:500;color:var(--muted);
+    padding:10px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;}
+  .tab:hover{color:var(--ink);}
+  .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;margin-bottom:18px;}
+  .panel h2{font-size:13px;font-weight:600;margin:0 0 4px;letter-spacing:.02em;}
+  .panel .note{color:var(--muted);font-size:12.5px;margin:0 0 16px;line-height:1.5;}
+  .section-num{font-family:"IBM Plex Mono",monospace;color:var(--accent);
+    font-size:11px;letter-spacing:.1em;}
+
+  /* board */
+  .board-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;}
+  table.board{border-collapse:collapse;width:100%;min-width:760px;font-family:"IBM Plex Mono",monospace;}
+  table.board th,table.board td{padding:0;text-align:center;font-size:11.5px;font-weight:400;}
+  .b-zonecol{position:sticky;left:0;background:var(--panel);text-align:left;
+    padding:8px 12px!important;min-width:172px;border-right:1px solid var(--line-strong);
+    font-family:"IBM Plex Sans",sans-serif;z-index:2;}
+  .b-zonecol .zname{font-size:12px;font-weight:600;}
+  .b-zonecol .ztz{font-size:10.5px;color:var(--muted);}
+  thead .b-hour{padding:6px 0 4px;color:var(--muted);font-size:10.5px;border-bottom:1px solid var(--line);}
+  .b-overlap-row td{height:7px;}
+  /* differentiate overlap markers by texture+border, not hue alone (a11y) */
+  .b-mark-work{background:var(--work);}
+  .b-mark-edge{background:var(--edge);
+    background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.28) 0 2px,transparent 2px 5px);
+    border-top:1px solid #6e4a05;border-bottom:1px solid #6e4a05;}
+  td.cell{height:34px;border-left:1px solid #EFF2F3;border-bottom:1px solid #EFF2F3;color:#46545d;}
+  td.cell.work{background:var(--work-bg);color:#0a6f60;}
+  td.cell.edge{background:var(--edge-bg);color:#8a5c06;}
+  td.cell.off{background:var(--off-bg);color:#a23a4e;}
+  td.cell.pinned{box-shadow:inset 0 0 0 2px var(--accent);font-weight:500;}
+  .pin-flag{font-family:"IBM Plex Sans";font-size:11px;color:var(--accent);font-weight:600;
+    display:inline-flex;align-items:center;gap:6px;margin-top:12px;}
+  .pin-dot{width:9px;height:9px;border:2px solid var(--accent);border-radius:50%;}
+
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:12px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .sw.work{background:var(--work-bg);border:1px solid var(--work);}
+  .sw.edge{background:var(--edge-bg);border:1px solid var(--edge);}
+  .sw.off{background:var(--off-bg);border:1px solid var(--off);}
+
+  /* recommendation strip */
+  .rec-headline{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px;}
+  .rec-time{font-family:"IBM Plex Mono",monospace;font-size:28px;font-weight:500;}
+  .rec-day{font-size:14px;color:var(--muted);}
+  .strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:16px;}
+  .chip{border:1px solid var(--line);border-radius:8px;padding:10px 12px;}
+  .chip .czone{font-size:11px;color:var(--muted);font-weight:500;}
+  .chip .ctime{font-family:"IBM Plex Mono",monospace;font-size:17px;margin-top:2px;}
+  .chip .ctag{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin-top:4px;}
+  .chip.work{background:var(--work-bg);border-color:#bfe5dd;} .chip.work .ctag{color:#0a6f60;}
+  .chip.edge{background:var(--edge-bg);border-color:#e8d7a8;} .chip.edge .ctag{color:#8a5c06;}
+  .chip.off{background:var(--off-bg);border-color:#eecdd4;} .chip.off .ctag{color:#a23a4e;}
+
+  .warn{display:flex;gap:10px;align-items:flex-start;background:#FBF1E0;
+    border:1px solid #E8D7A8;border-radius:8px;padding:12px 14px;margin-top:18px;font-size:13px;line-height:1.5;}
+  .warn .wicon{color:var(--edge);font-weight:700;font-family:"IBM Plex Mono";}
+  .ok{background:var(--work-bg);border-color:#bfe5dd;}
+  .ok .wicon{color:var(--work);}
+
+  /* poll */
+  .slot-row{border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:10px;}
+  .slot-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;}
+  .slot-when{font-family:"IBM Plex Mono",monospace;font-size:15px;}
+  .slot-when small{color:var(--muted);font-size:12px;}
+  .slot-yours{font-size:12px;color:var(--muted);margin-top:3px;}
+  .seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:7px;overflow:hidden;}
+  .seg button{appearance:none;border:none;background:var(--panel);cursor:pointer;
+    font-family:inherit;font-size:12px;font-weight:500;padding:7px 13px;color:var(--muted);
+    border-left:1px solid var(--line);}
+  .seg button:first-child{border-left:none;}
+  /* darkened active fills (AA>=5.0) + a tick so selection is not color-alone */
+  .seg button[data-on="yes"]{background:var(--work-on);color:#fff;}
+  .seg button[data-on="maybe"]{background:var(--edge-on);color:#fff;}
+  .seg button[data-on="no"]{background:var(--off-on);color:#fff;}
+  .seg button[data-on]::before{content:"\2713 ";font-weight:700;}
+  .minstrip{display:flex;gap:5px;margin-top:10px;flex-wrap:wrap;}
+  .ministub{font-family:"IBM Plex Mono",monospace;font-size:10.5px;padding:3px 7px;border-radius:5px;border:1px solid var(--line);color:var(--muted);}
+  .ministub.work{background:var(--work-bg);color:#0a6f60;border-color:#bfe5dd;}
+  .ministub.edge{background:var(--edge-bg);color:#8a5c06;border-color:#e8d7a8;}
+  .ministub.off{background:var(--off-bg);color:#a23a4e;border-color:#eecdd4;}
+
+  .tally{display:flex;gap:3px;margin-top:12px;height:8px;border-radius:4px;overflow:hidden;background:#EEF1F2;}
+  .tally i{display:block;height:100%;}
+  .tally .ty{background:var(--work);} .tally .tm{background:var(--edge);} .tally .tn{background:var(--off);}
+  .tally-labels{font-size:11.5px;color:var(--muted);margin-top:6px;font-family:"IBM Plex Mono";}
+  .awaiting{font-size:12px;color:var(--off);margin-top:8px;}
+  .awaiting b{color:var(--ink);font-weight:500;}
+  .best-tag{font-size:10.5px;font-weight:600;color:#fff;background:var(--accent);
+    padding:2px 8px;border-radius:20px;letter-spacing:.04em;}
+
+  /* forms */
+  label.fld{display:block;font-size:11.5px;color:var(--muted);font-weight:500;margin:0 0 4px;}
+  input[type=text],input[type=email],input[type=date],input[type=time],input[type=number],select,textarea{
+    font-family:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--line-strong);
+    border-radius:7px;background:var(--panel);color:var(--ink);width:100%;}
+  textarea{resize:vertical;min-height:64px;line-height:1.5;}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent);}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;}
+  .row > div{flex:1;min-width:120px;}
+  button.btn{appearance:none;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;
+    border:1px solid var(--accent);background:var(--accent);color:#fff;padding:9px 16px;border-radius:7px;}
+  button.btn.ghost{background:var(--panel);color:var(--accent);}
+  button.btn.danger{background:var(--panel);color:var(--off);border-color:var(--off);}
+  button.btn:hover{filter:brightness(.96);}
+  button.btn:disabled{opacity:.5;cursor:default;}
+  button.link{appearance:none;border:none;background:none;color:var(--muted);cursor:pointer;
+    font-family:inherit;font-size:12px;text-decoration:underline;padding:0;}
+  button.link:hover{color:var(--off);}
+  table.list{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;}
+  table.list td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  table.list td:last-child{text-align:right;width:1%;white-space:nowrap;}
+  .pill{display:inline-block;font-family:"IBM Plex Mono";font-size:11px;padding:2px 8px;
+    border-radius:20px;background:var(--accent-bg);color:var(--accent);}
+
+  /* invite links panel */
+  .invite-list{margin-top:10px;}
+  .invite-row{display:flex;gap:10px;align-items:center;border:1px solid var(--line);
+    border-radius:7px;padding:9px 11px;margin-bottom:8px;flex-wrap:wrap;}
+  .invite-row .who{font-size:12.5px;font-weight:500;min-width:140px;flex:0 0 auto;}
+  .invite-row .lnk{font-family:"IBM Plex Mono";font-size:11px;color:var(--muted);
+    flex:1;min-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+  /* responder big-time */
+  .resp-slot{border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px;}
+  .resp-mytime{font-family:"IBM Plex Mono",monospace;font-size:30px;font-weight:500;line-height:1;}
+  .resp-comfort{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.04em;
+    text-transform:uppercase;padding:3px 9px;border-radius:20px;margin-left:10px;vertical-align:middle;}
+  .resp-comfort.work{background:var(--work-bg);color:#0a6f60;border:1px solid var(--work);}
+  .resp-comfort.edge{background:var(--edge-bg);color:#6e4a05;border:1px solid var(--edge);}
+  .resp-comfort.off{background:var(--off-bg);color:#9a2c40;border:1px solid var(--off);}
+  .resp-reftime{font-size:12.5px;color:var(--muted);margin-top:7px;}
+  .resp-seg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:14px;}
+  .resp-seg button{appearance:none;border:1px solid var(--line-strong);background:var(--panel);
+    cursor:pointer;font-family:inherit;font-size:15px;font-weight:600;color:var(--muted);
+    padding:16px 8px;border-radius:9px;}
+  .resp-seg button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .resp-seg button[data-on="yes"]{background:var(--work-on);color:#fff;border-color:var(--work-on);}
+  .resp-seg button[data-on="maybe"]{background:var(--edge-on);color:#fff;border-color:var(--edge-on);}
+  .resp-seg button[data-on="no"]{background:var(--off-on);color:#fff;border-color:var(--off-on);}
+  .resp-seg button[data-on]::after{content:" \2713";font-weight:800;}
+
+  .savebar{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);
+    padding:14px 0 4px;margin-top:8px;}
+  .save-state{font-size:13px;margin-top:10px;line-height:1.5;}
+  .save-state.ok{color:#0a6f60;font-weight:500;}
+  .save-state.err{color:var(--off);font-weight:500;}
+  .who-line{font-size:13px;color:var(--ink);margin:0 0 4px;}
+  .who-guest{color:#8a5c06;font-size:12px;margin-top:3px;}
+  .trust{font-size:11.5px;color:var(--muted);margin-top:14px;line-height:1.5;
+    border-top:1px solid var(--line);padding-top:12px;}
+
+  .loading{padding:60px 0;text-align:center;color:var(--muted);font-family:"IBM Plex Mono";font-size:13px;}
+  .storage-note{font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.5;}
+  .hide{display:none!important;}
+  @media (max-width:560px){
+    h1{font-size:21px;} .gap-readout{text-align:left;} .masthead{align-items:flex-start;}
+    .rec-time{font-size:23px;} .resp-mytime{font-size:25px;}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+</style>
+
+<div class="wrap" id="root">
+  <div class="loading">Loading…</div>
+</div>
+
+<script>
+"use strict";
+
+/* ====================================================================
+   0. GITHUB CONFIG BLOCK
+   --------------------------------------------------------------------
+   Deploy (GitHub Actions) injects the dispatch token from a secret in
+   place of __POLL_DISPATCH_TOKEN__. owner/repo are replaced at deploy or
+   hand-edited. If dispatchToken still equals the placeholder or is empty,
+   the app runs LOCAL-ONLY (no network; localStorage is the source of
+   truth). Otherwise sharedMode is on: writes via repository_dispatch,
+   reads via raw.githubusercontent.
+   ==================================================================== */
+const GH = {
+  owner: "adityachaturvedii",       // baked in; deploy re-injects the same value
+  repo: "convene",
+  dataBranch: "poll-data",
+  dispatchToken: "__POLL_DISPATCH_TOKEN__"  // injected from Actions secret at deploy; if it still
+                                            // equals this placeholder or is empty => LOCAL-ONLY mode
+};
+// sharedMode = token looks real (not the placeholder, non-empty)
+const TOKEN_PLACEHOLDER = "__POLL_DISPATCH_TOKEN__";
+const sharedMode = !!GH.dispatchToken && GH.dispatchToken !== TOKEN_PLACEHOLDER;
+const ownerSet = GH.owner && GH.owner !== "__GH_OWNER__";
+const repoSet  = GH.repo  && GH.repo  !== "__GH_REPO__";
+const pagesBase = (ownerSet && repoSet)
+  ? `https://${GH.owner}.github.io/${GH.repo}/`
+  : (location.origin + location.pathname);
+
+/* ====================================================================
+   0b. GITHUB I/O — write via repository_dispatch, read via raw.
+   These are the ONLY functions that talk to GitHub. The Store adapter
+   (section 1) layers localStorage on top of these.
+   ==================================================================== */
+const GHIO = {
+  // POST a repository_dispatch with one OPS payload. 204 => accepted.
+  async dispatch(clientPayload){
+    if(!sharedMode) return { ok:false, local:true };
+    const res = await fetch(`https://api.github.com/repos/${GH.owner}/${GH.repo}/dispatches`, {
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer "+GH.dispatchToken,
+        "Accept":"application/vnd.github+json",
+        "X-GitHub-Api-Version":"2022-11-28"
+      },
+      body: JSON.stringify({ event_type:"poll-op", client_payload: clientPayload })
+    });
+    return { ok: res.status === 204, status: res.status };
+  },
+  // Keyless read of a JSON file from the poll-data branch. 404 => null.
+  async readJson(path){
+    const url = `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.dataBranch}/${path}?cb=${Date.now()}`;
+    try{
+      const res = await fetch(url, { cache:"no-store" });
+      if(res.status === 404) return null;       // not synced yet => empty, not an error
+      if(!res.ok) return null;
+      return await res.json();
+    }catch(e){ return null; }
+  },
+  pollJsonPath:  pid => `polls/${pid}/poll.json`,
+  votesJsonPath: pid => `polls/${pid}/votes.json`
+};
+
+/* ====================================================================
+   1. STORE ADAPTER — the only persistence swap point.
+   --------------------------------------------------------------------
+   localStorage is ALWAYS used (cache + local-only source of truth for
+   organizer setup and the user's own in-progress vote). When sharedMode,
+   GitHub is layered on: writes are repository_dispatch (POST dispatches),
+   reads are raw.githubusercontent fetches. The four-function shape
+   (get/set/del/list) is preserved for local keys; GitHub-backed poll/vote
+   data uses the explicit dispatch/fetch helpers below it.
+   ==================================================================== */
+const Store = (() => {
+  const PFX = "czmc:";                  // localStorage namespace
+  function lget(k){
+    try{ const v = localStorage.getItem(PFX+k); return v==null ? null : JSON.parse(v); }
+    catch(e){ return null; }
+  }
+  function lset(k,v){
+    try{ localStorage.setItem(PFX+k, JSON.stringify(v)); return true; }
+    catch(e){ return false; }
+  }
+  function ldel(k){ try{ localStorage.removeItem(PFX+k); }catch(e){} }
+  function llist(pfx){
+    const out=[];
+    try{
+      for(let i=0;i<localStorage.length;i++){
+        const key = localStorage.key(i);
+        if(key && key.startsWith(PFX+pfx)) out.push(key.slice(PFX.length));
+      }
+    }catch(e){}
+    return out;
+  }
+
+  // --- four-function local adapter (organizer setup, drafts, identity) ---
+  async function get(k){ return lget(k); }
+  async function set(k,v){ return lset(k,v); }
+  async function del(k){ ldel(k); }
+  async function list(pfx){ return llist(pfx); }
+
+  // --- GitHub-backed poll/vote ops (sharedMode) with local cache ---
+  // savePoll: cache locally + dispatch save-poll
+  async function savePoll(poll){
+    lset("poll:"+poll.id, poll);
+    if(sharedMode) return await GHIO.dispatch({ op:"save-poll", poll });
+    return { ok:false, local:true };
+  }
+  // loadPoll: prefer remote (sharedMode), fall back to local cache
+  async function loadPoll(pid){
+    if(sharedMode){
+      const remote = await GHIO.readJson(GHIO.pollJsonPath(pid));
+      if(remote){ lset("poll:"+pid, remote); return remote; }
+    }
+    return lget("poll:"+pid);
+  }
+  // loadVotes: prefer remote, fall back to local optimistic cache
+  async function loadVotes(pid){
+    if(sharedMode){
+      const remote = await GHIO.readJson(GHIO.votesJsonPath(pid));
+      if(remote){ return remote; }
+    }
+    return lget("votes:"+pid) || {};
+  }
+  // castVote: read-modify-write the local optimistic copy + dispatch
+  async function castVote(payload){
+    // payload conforms to OPS cast-vote shape exactly.
+    const pid = payload.pollId;
+    const cache = lget("votes:"+pid) || {};
+    const key = payload.guest
+      ? "guest:"+slugify(payload.name)
+      : payload.rosterId;
+    cache[key] = {
+      name: payload.name, zoneId: payload.zoneId,
+      responses: payload.responses, guest: !!payload.guest,
+      updatedAt: new Date().toISOString()
+    };
+    lset("votes:"+pid, cache);
+    if(sharedMode) return await GHIO.dispatch(payload);
+    return { ok:false, local:true };
+  }
+  // merge fetched votes into local cache without dropping in-flight local key
+  function mergeVotes(pid, remote, protectKey){
+    const cache = lget("votes:"+pid) || {};
+    const merged = { ...remote };
+    if(protectKey && cache[protectKey]){
+      // keep local optimistic copy if remote doesn't yet have a newer one
+      const r = remote[protectKey], l = cache[protectKey];
+      if(!r || (l.updatedAt && (!r.updatedAt || l.updatedAt > r.updatedAt))) merged[protectKey] = l;
+    }
+    lset("votes:"+pid, merged);
+    return merged;
+  }
+  async function deletePoll(pid){
+    ldel("poll:"+pid); ldel("votes:"+pid);
+    if(sharedMode) return await GHIO.dispatch({ op:"delete-poll", pollId:pid });
+    return { ok:false, local:true };
+  }
+
+  return { get, set, del, list,
+           savePoll, loadPoll, loadVotes, castVote, mergeVotes, deletePoll };
+})();
+
+/* ====================================================================
+   1b. CRYPTO / IDENTITY
+   - random url-safe token (>=16 chars) via crypto.getRandomValues
+   - tokenHash = lowercase hex SHA-256 of the raw token (Web Crypto)
+   ==================================================================== */
+const URLSAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+function randomToken(len){
+  len = len || 22;
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  let s = "";
+  for(let i=0;i<len;i++) s += URLSAFE[arr[i] % URLSAFE.length];
+  return s;
+}
+async function sha256Hex(str){
+  const bytes = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+function slugify(s){
+  // MUST stay byte-identical to slugifyName() in scripts/ingest.mjs so the guest
+  // key minted in the browser equals the key the ingest Action commits.
+  const slug = String(s||"")
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g,"")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g,"-")
+    .replace(/^-+|-+$/g,"");
+  return slug || "guest";
+}
+
+/* ====================================================================
+   2. TIMEZONE PRIMITIVES (verified against Intl tz database) — VERBATIM
+   ==================================================================== */
+const WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function tzOffsetMin(tz, date){
+  const dtf = new Intl.DateTimeFormat("en-US",{timeZone:tz,hour12:false,
+    year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const p = {}; for(const x of dtf.formatToParts(date)) if(x.type!=="literal") p[x.type]=x.value;
+  let h = parseInt(p.hour,10); if(h===24) h=0;
+  const asUTC = Date.UTC(+p.year, +p.month-1, +p.day, h, +p.minute, +p.second);
+  return Math.round((asUTC - date.getTime())/60000);
+}
+function zonedWallToUtc(y,mo,d,h,mi,tz){
+  const guess = Date.UTC(y,mo-1,d,h,mi);
+  let off = tzOffsetMin(tz, new Date(guess));
+  let utc = guess - off*60000;
+  off = tzOffsetMin(tz, new Date(utc));       // second pass: DST-boundary safe
+  utc = guess - off*60000;
+  return new Date(utc);
+}
+function localParts(date, tz){
+  const dtf = new Intl.DateTimeFormat("en-GB",{timeZone:tz,weekday:"short",
+    day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false});
+  const p = {}; for(const x of dtf.formatToParts(date)) if(x.type!=="literal") p[x.type]=x.value;
+  let h = parseInt(p.hour,10); if(h===24) h=0;
+  const m = parseInt(p.minute,10);
+  return { min:h*60+m, hh:String(h).padStart(2,"0"), mm:String(m).padStart(2,"0"),
+           wd:p.weekday, day:p.day, mon:p.month };
+}
+function refWeekday(y,m,d,tz){
+  const utc = zonedWallToUtc(y,m,d,12,0,tz);
+  return WD.indexOf(new Intl.DateTimeFormat("en-US",{timeZone:tz,weekday:"short"}).format(utc));
+}
+function nearestWeekdayDate(y,m,d,target,tz){
+  for(let off=0;off<7;off++){
+    const dt = new Date(Date.UTC(y,m-1,d+off));
+    if(refWeekday(dt.getUTCFullYear(),dt.getUTCMonth()+1,dt.getUTCDate(),target,tz)===target)
+      return {y:dt.getUTCFullYear(),m:dt.getUTCMonth()+1,d:dt.getUTCDate()};
+  }
+  return {y,m,d};
+}
+const fmtMin = m => String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");
+
+/* comfort classification: work | edge (shoulder) | off (night) */
+function classify(localMin, z){
+  if(localMin>=z.ws && localMin<z.we) return "work";
+  if((localMin>=z.ws-90 && localMin<z.ws) || (localMin>=z.we && localMin<z.we+120)) return "edge";
+  return "off";
+}
+const CLASS_LABEL = {work:"Working hrs", edge:"Edge of day", off:"Outside hrs"};
+
+/* ====================================================================
+   3. DEFAULT SEED  (editable in Setup)
+   ==================================================================== */
+const DEFAULTS = {
+  meta:{ title:"Cross-zone team sync", refTz:"Europe/Berlin", weekday:2, duration:60 },
+  zones:[
+    {id:"z_cest", label:"CEST · Biberach / Budapest", tz:"Europe/Berlin",       ws:8*60, we:18*60},
+    {id:"z_aest", label:"AEST · Proxmed (Melbourne)", tz:"Australia/Melbourne",  ws:8*60, we:18*60},
+    {id:"z_ist",  label:"IST · You (Delhi)",          tz:"Asia/Kolkata",         ws:9*60, we:19*60},
+  ],
+  roster:[
+    {id:"r1", name:"Adelheid Orend",   zoneId:"z_cest", email:""},
+    {id:"r2", name:"Zita Mehesz",      zoneId:"z_cest", email:""},
+    {id:"r3", name:"Doris Zimmermann", zoneId:"z_cest", email:""},
+    {id:"r4", name:"Gagan Sharma",     zoneId:"z_aest", email:""},
+    {id:"r5", name:"Niruta Dhimal",    zoneId:"z_aest", email:""},
+    {id:"r6", name:"Aditya Chaturvedi",zoneId:"z_ist",  email:""},
+  ],
+  slots:[] // candidate poll slots seeded at load relative to "now"
+};
+
+const COMMON_TZS = ["Europe/Berlin","Europe/Budapest","Australia/Melbourne","Australia/Sydney",
+  "Asia/Kolkata","Asia/Tokyo","Asia/Shanghai","Europe/London","America/New_York","America/Los_Angeles","UTC"];
+
+/* ====================================================================
+   4. STATE
+   ==================================================================== */
+let state = { meta:null, zones:[], roster:[], slots:[], votes:{},
+              pollId:null, organizer:"", invites:null };
+let view = "overlap";
+const uid = () => Math.random().toString(36).slice(2,9);
+
+// detect this browser's zone, match it to a configured zone if possible
+function detectTz(){
+  try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
+  catch(e){ return "UTC"; }
+}
+
+async function loadOrganizerState(){
+  state.meta   = await Store.get("meta")   || {...DEFAULTS.meta};
+  state.zones  = await Store.get("zones")  || DEFAULTS.zones.map(z=>({...z}));
+  state.roster = await Store.get("roster") || DEFAULTS.roster.map(r=>({...r}));
+  state.slots  = await Store.get("slots");
+  if(!state.slots){ state.slots = seedSlots(); await Store.set("slots", state.slots); }
+  state.organizer = await Store.get("organizer") || "";
+  state.pollId    = await Store.get("currentPollId") || null;
+  state.invites   = await Store.get("invites:"+(state.pollId||"")) || null;
+  // load votes for the current poll if any
+  state.votes = state.pollId ? (await Store.loadVotes(state.pollId)) : {};
+}
+
+function seedSlots(){
+  // three concrete candidates anchored to the next recurring weekday in CEST
+  const wd = DEFAULTS.meta.weekday, refTz = DEFAULTS.meta.refTz;
+  const now = new Date();
+  const base = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate()+3, wd, refTz);
+  const mk = (h,m,lbl) => ({ id:"s_"+uid(),
+    utc: zonedWallToUtc(base.y,base.m,base.d,h,m,refTz).toISOString(), label:lbl });
+  return [ mk(9,0,"Inside overlap"), mk(11,0,"Current proposal"), mk(8,30,"Early CEST") ];
+}
+async function saveMeta(){ await Store.set("meta", state.meta); }
+async function saveZones(){ await Store.set("zones", state.zones); }
+async function saveRoster(){ await Store.set("roster", state.roster); }
+async function saveSlots(){ await Store.set("slots", state.slots); }
+
+/* ====================================================================
+   5. HELPERS
+   ==================================================================== */
+const zoneById = id => state.zones.find(z=>z.id===id);
+const peopleInZone = id => state.roster.filter(r=>r.zoneId===id).length;
+const esc = s => String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function currentGap(){
+  const cest = state.zones.find(z=>z.tz==="Europe/Berlin") || state.zones[0];
+  const aest = state.zones.find(z=>z.tz==="Australia/Melbourne") || state.zones[1] || state.zones[0];
+  if(!cest || !aest) return null;
+  const now = new Date();
+  const g = (tzOffsetMin(aest.tz,now) - tzOffsetMin(cest.tz,now))/60;
+  return { hours:g, a:aest, b:cest };
+}
+
+function computeRecommendation(weekday){
+  const refTz = state.meta.refTz;
+  const now = new Date();
+  const sd = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate(), weekday, refTz);
+  let best = null;
+  for(let t=6*60; t<=20*60; t+=30){
+    const utc = zonedWallToUtc(sd.y,sd.m,sd.d,Math.floor(t/60),t%60,refTz);
+    let score=0, work=0;
+    for(const z of state.zones){
+      const c = classify(localParts(utc,z.tz).min, z);
+      const n = Math.max(1, peopleInZone(z.id));
+      score += (c==="work"?2:c==="edge"?1:-3)*n;
+      if(c==="work") work++;
+    }
+    if(!best || score>best.score || (score===best.score && work>best.work))
+      best = {t, utc, score, work};
+  }
+  return best;
+}
+
+/* ====================================================================
+   6. ROUTING — responder view when location.hash has poll=<id>
+   ==================================================================== */
+function parseHash(){
+  const h = location.hash.replace(/^#/, "");
+  const p = new URLSearchParams(h);
+  return { poll:p.get("poll"), who:p.get("who"), t:p.get("t") };
+}
+
+/* ====================================================================
+   7a. ORGANIZER APP RENDER
+   ==================================================================== */
+function rootEl(){ return document.getElementById("root"); }
+
+function organizerShell(){
+  rootEl().className = "wrap";
+  rootEl().innerHTML = `
+  <header class="masthead">
+    <div>
+      <p class="eyebrow" id="eyebrow">Convene · cross-zone scheduling</p>
+      <h1 id="title">${esc(state.meta.title)}</h1>
+      <p class="sub" id="subline">Find the least-cruel common slot. Working hours are shaded per zone; the overlap is where everyone is awake and at work.</p>
+    </div>
+    <div class="gap-readout">
+      <span class="big mono" id="gapBig">—</span>
+      <small id="gapLabel">offset today</small>
+    </div>
+  </header>
+  <div id="modebar"></div>
+  <nav class="tabs" id="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="overlap" aria-selected="true">Overlap board</button>
+    <button class="tab" role="tab" data-view="recurring" aria-selected="false">Recurring slot</button>
+    <button class="tab" role="tab" data-view="poll" aria-selected="false">Poll &amp; invite</button>
+    <button class="tab" role="tab" data-view="results" aria-selected="false">Results</button>
+    <button class="tab" role="tab" data-view="setup" aria-selected="false">Setup</button>
+  </nav>
+  <div id="app"><div class="loading">Loading…</div></div>`;
+  document.getElementById("tabs").addEventListener("click", e=>{
+    const b=e.target.closest(".tab"); if(b) setView(b.dataset.view);
+  });
+  renderModebar();
+}
+function renderModebar(){
+  const el = document.getElementById("modebar");
+  if(!el) return;
+  el.className = "modebar " + (sharedMode ? "shared" : "local");
+  el.innerHTML = sharedMode
+    ? `<span class="dot"></span>Shared mode — votes are collected via GitHub for ${esc(GH.owner)}/${esc(GH.repo)}.`
+    : `<span class="dot"></span>Local mode — deploy to GitHub to collect votes from others.`;
+}
+const app = () => document.getElementById("app");
+
+function renderHeader(){
+  const t = document.getElementById("title"); if(t) t.textContent = state.meta.title;
+  const g = currentGap();
+  if(g && document.getElementById("gapBig")){
+    document.getElementById("gapBig").textContent = (g.hours>0?"+":"")+g.hours+"h";
+    document.getElementById("gapLabel").textContent =
+      g.a.tz.split("/").pop()+" vs "+g.b.tz.split("/").pop()+" today";
+  }
+}
+function setView(v){
+  view = v;
+  document.querySelectorAll(".tab").forEach(t =>
+    t.setAttribute("aria-selected", String(t.dataset.view===v)));
+  render();
+}
+function render(){
+  renderHeader();
+  if(view==="overlap")   app().innerHTML = viewOverlap();
+  if(view==="recurring") app().innerHTML = viewRecurring();
+  if(view==="poll"){ app().innerHTML = viewPoll(); wirePoll(); }
+  if(view==="results"){ app().innerHTML = viewResults(); wireResults(); }
+  if(view==="setup"){ app().innerHTML = viewSetup(); wireSetup(); }
+}
+
+/* ---- Overlap board (VERBATIM visual language) ----------------------- */
+function viewOverlap(){
+  const refTz = state.meta.refTz, weekday = state.meta.weekday;
+  const now = new Date();
+  const day = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate(), weekday, refTz);
+  const startH=0, endH=24;
+  const rec = computeRecommendation(weekday);
+  const pinHour = rec ? Math.round(rec.t/60) : -1;
+
+  const cols = [];
+  for(let h=startH; h<endH; h++){
+    const utc = zonedWallToUtc(day.y,day.m,day.d,h,0,refTz);
+    const cells = state.zones.map(z=>{
+      const lp = localParts(utc,z.tz);
+      return { c:classify(lp.min,z), t:lp.hh+":"+lp.mm };
+    });
+    const allWork = cells.every(c=>c.c==="work");
+    const allOk   = cells.every(c=>c.c!=="off");
+    cols.push({h, cells, allWork, allOk});
+  }
+
+  let head = `<th class="b-zonecol">Zone</th>`;
+  cols.forEach(c => head += `<th class="b-hour">${String(c.h).padStart(2,"0")}</th>`);
+
+  let overlapRow = `<td class="b-zonecol" style="border-bottom:none"></td>`;
+  cols.forEach(c => overlapRow +=
+    `<td class="${c.allWork?"b-mark-work":(c.allOk?"b-mark-edge":"")}"></td>`);
+
+  let body = "";
+  state.zones.forEach((z,zi)=>{
+    let row = `<td class="b-zonecol"><div class="zname">${esc(z.label)}</div>
+      <div class="ztz mono">${esc(z.tz.split("/").pop())} · ${fmtMin(z.ws)}–${fmtMin(z.we)}</div></td>`;
+    cols.forEach(c=>{
+      const cell = c.cells[zi];
+      const pin = c.h===pinHour ? " pinned" : "";
+      row += `<td class="cell ${cell.c}${pin}">${cell.t}</td>`;
+    });
+    body += `<tr>${row}</tr>`;
+  });
+
+  const recTxt = rec
+    ? `Recommended recurring slot sits at <b class="mono">${fmtMin(rec.t)} ${refTz.split("/").pop()}</b> on ${WD[weekday]}day — the ${rec.work}-of-${state.zones.length}-zone best. See the Recurring tab.`
+    : "";
+
+  return `
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+      <h2><span class="section-num">01 · </span>Where the day actually overlaps</h2>
+      <span class="mono" style="font-size:12px;color:var(--muted)">${WD[weekday]} · columns = ${refTz.split("/").pop()} hours</span>
+    </div>
+    <p class="note">Each cell is the local clock time in that zone. The thin bar on top lights
+      <b style="color:var(--work)">green</b> where everyone is in working hours,
+      <b style="color:var(--edge)">amber (hatched)</b> where it's the edge of someone's day but nobody is asleep.</p>
+    <div class="board-scroll">
+      <table class="board">
+        <thead><tr>${head}</tr></thead>
+        <tbody>
+          <tr class="b-overlap-row">${overlapRow}</tr>
+          ${body}
+        </tbody>
+      </table>
+    </div>
+    <div class="pin-flag"><span class="pin-dot"></span>${recTxt}</div>
+    <div class="legend">
+      <span><i class="sw work"></i> Working hours</span>
+      <span><i class="sw edge"></i> Edge of day (early / late)</span>
+      <span><i class="sw off"></i> Outside hours / night</span>
+    </div>
+  </div>`;
+}
+
+/* ---- Recurring recommendation + DST check (VERBATIM) ---------------- */
+function viewRecurring(){
+  const refTz = state.meta.refTz, weekday = state.meta.weekday;
+  const rec = computeRecommendation(weekday);
+  if(!rec) return `<div class="panel"><p class="note">Add at least one zone in Setup.</p></div>`;
+
+  const wallH = Math.floor(rec.t/60), wallM = rec.t%60;
+
+  const stripFor = (utc) => state.zones.map(z=>{
+    const lp = localParts(utc,z.tz); const c = classify(lp.min,z);
+    return `<div class="chip ${c}"><div class="czone">${esc(z.label)}</div>
+      <div class="ctime mono">${lp.wd} ${lp.hh}:${lp.mm}</div>
+      <div class="ctag">${CLASS_LABEL[c]}</div></div>`;
+  }).join("");
+
+  const now = new Date();
+  const sd = nearestWeekdayDate(now.getUTCFullYear(), now.getUTCMonth()+1, now.getUTCDate(), weekday, refTz);
+  const summerUtc = zonedWallToUtc(sd.y,sd.m,sd.d,wallH,wallM,refTz);
+  const wd2 = nearestWeekdayDate(2026,12,10,weekday,refTz);
+  const winterUtc = zonedWallToUtc(wd2.y,wd2.m,wd2.d,wallH,wallM,refTz);
+
+  let drift = [];
+  state.zones.forEach(z=>{
+    const cs = classify(localParts(summerUtc,z.tz).min,z);
+    const cw = classify(localParts(winterUtc,z.tz).min,z);
+    if(cs!==cw){
+      const lw = localParts(winterUtc,z.tz);
+      drift.push(`${z.tz.split("/").pop()} becomes <b class="mono">${lw.hh}:${lw.mm}</b> (${CLASS_LABEL[cw].toLowerCase()})`);
+    }
+  });
+  const driftBanner = drift.length
+    ? `<div class="warn"><span class="wicon">!</span><div><b>DST drift.</b> Europe and Australia shift clocks in
+        opposite directions. A fixed wall-clock time rots across the year — by mid-December:
+        ${drift.join("; ")}. Consider re-anchoring the slot each DST season, or pinning to UTC.</div></div>`
+    : `<div class="warn ok"><span class="wicon">✓</span><div>This slot holds its comfort profile across the
+        summer/winter DST shift. Safe to set as a standing wall-clock time.</div></div>`;
+
+  return `
+  <div class="panel">
+    <h2><span class="section-num">02 · </span>Best standing weekly slot</h2>
+    <p class="note">Searched 06:00–20:00 ${refTz.split("/").pop()} on ${WD[weekday]}day, scored by how many
+      people land in working hours (night times penalised). Change the day in Setup.</p>
+    <div class="rec-headline">
+      <span class="rec-time mono">${fmtMin(rec.t)}</span>
+      <span class="rec-day">${refTz.split("/").pop()} · every ${WD[weekday]}day · ${state.meta.duration} min</span>
+    </div>
+    <div class="strip">${stripFor(rec.utc)}</div>
+    ${driftBanner}
+  </div>`;
+}
+
+/* ---- Poll & invite (organizer create-poll flow) --------------------- */
+function viewPoll(){
+  const slots = [...state.slots].sort((a,b)=>a.utc.localeCompare(b.utc));
+  const slotCards = slots.map(s=>{
+    const utc=new Date(s.utc); const lp=localParts(utc,state.meta.refTz);
+    const mini = state.zones.map(z=>{
+      const l=localParts(utc,z.tz); const c=classify(l.min,z);
+      return `<span class="ministub ${c}">${z.tz.split("/").pop()} ${l.hh}:${l.mm}</span>`;
+    }).join("");
+    return `
+    <div class="slot-row">
+      <div class="slot-head">
+        <div class="slot-when mono">${lp.wd} ${lp.day} ${lp.mon} · ${lp.hh}:${lp.mm}
+          <small>${state.meta.refTz.split("/").pop()}${s.label?" · "+esc(s.label):""}</small></div>
+        <button class="link" data-sdel="${s.id}">remove</button>
+      </div>
+      <div class="minstrip">${mini}</div>
+    </div>`;
+  }).join("");
+
+  const addForm = `
+    <div class="row">
+      <div><label class="fld">Date</label><input type="date" id="newDate"></div>
+      <div><label class="fld">Time (${state.meta.refTz.split("/").pop()})</label><input type="time" id="newTime" value="09:00"></div>
+      <div><label class="fld">Label (optional)</label><input type="text" id="newLabel" placeholder="e.g. backup"></div>
+      <div style="flex:0"><button class="btn" id="addSlot">Add slot</button></div>
+    </div>`;
+
+  const rosterRows = state.roster.map(r=>`
+    <tr>
+      <td><input type="text" data-redit="name" data-id="${r.id}" value="${esc(r.name)}" placeholder="Name"></td>
+      <td><input type="email" data-redit="email" data-id="${r.id}" value="${esc(r.email||"")}" placeholder="email (stays local)"></td>
+      <td><select data-redit="zoneId" data-id="${r.id}">${state.zones.map(z=>
+        `<option value="${z.id}" ${z.id===r.zoneId?"selected":""}>${esc(z.label)}</option>`).join("")}</select></td>
+      <td><button class="link" data-rdel="${r.id}">remove</button></td>
+    </tr>`).join("");
+
+  const invitePanel = state.invites ? renderInvitePanel() : "";
+
+  return `
+  <div class="panel">
+    <h2><span class="section-num">03 · </span>Meeting &amp; candidate slots</h2>
+    <p class="note">Set the title and the times you want to offer. Times are entered in
+      ${state.meta.refTz.split("/").pop()} and convert for everyone automatically.</p>
+    <div class="row" style="margin-bottom:14px">
+      <div><label class="fld">Meeting title</label><input type="text" id="pollTitle" value="${esc(state.meta.title)}"></div>
+      <div><label class="fld">Organizer name</label><input type="text" id="orgName" value="${esc(state.organizer)}" placeholder="e.g. Aditya"></div>
+    </div>
+    ${slots.length?slotCards:'<p class="note">No slots yet — add one below.</p>'}
+    ${addForm}
+  </div>
+
+  <div class="panel">
+    <h2>Invitees <span class="pill">${state.roster.length} people</span></h2>
+    <p class="note">Name + email per person. <b>Emails stay in this browser only</b> — they are never
+      written into poll.json or any GitHub request. Each person gets a private invite link.</p>
+    <table class="list"><thead><tr style="font-size:11px;color:var(--muted)">
+      <td>Name</td><td>Email (local only)</td><td>Zone</td><td></td></tr></thead>
+      <tbody>${rosterRows}</tbody></table>
+    <div style="margin-top:12px"><button class="btn ghost" id="addPerson">+ Add person</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>Publish &amp; invite links</h2>
+    <p class="note">${sharedMode
+      ? "Publishing generates a poll id and a private token per person, then fires a save-poll to GitHub. Share each link with the matching person."
+      : "Local mode: publishing generates the poll + invite links locally so you can preview them. Deploy to GitHub to collect real votes."}</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn" id="publishPoll">${state.invites?"Re-publish poll":"Create / publish poll"}</button>
+      ${state.invites?`<button class="btn danger" id="deletePoll">Delete this poll + all its data</button>`:""}
+      <span id="publishState" class="storage-note"></span>
+    </div>
+    ${invitePanel}
+  </div>`;
+}
+
+function renderInvitePanel(){
+  const inv = state.invites;
+  const rows = inv.links.map(l=>`
+    <div class="invite-row">
+      <span class="who">${esc(l.name)}</span>
+      <span class="lnk" title="${esc(l.url)}">${esc(l.url)}</span>
+      <button class="btn ghost" data-copyone="${esc(l.url)}">Copy</button>
+    </div>`).join("");
+  return `
+  <div class="invite-list">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <span class="pill">poll ${esc(inv.pollId)}</span>
+      <button class="btn ghost" id="copyAll">Copy all invite links</button>
+    </div>
+    ${rows}
+    <p class="storage-note" style="margin-top:8px">Each link contains a one-time private token. Anyone with a
+      person's link can answer as that person, so send links individually (the token is only the hash on GitHub).</p>
+  </div>`;
+}
+
+function wirePoll(){
+  const titleEl=document.getElementById("pollTitle");
+  if(titleEl) titleEl.addEventListener("change", async e=>{
+    state.meta.title=e.target.value.trim()||"Cross-zone team sync"; await saveMeta(); renderHeader();
+  });
+  const orgEl=document.getElementById("orgName");
+  if(orgEl) orgEl.addEventListener("change", async e=>{
+    state.organizer=e.target.value.trim(); await Store.set("organizer", state.organizer);
+  });
+
+  document.getElementById("addSlot")?.addEventListener("click", async ()=>{
+    const d=document.getElementById("newDate").value, t=document.getElementById("newTime").value;
+    if(!d||!t){ alert("Pick a date and time."); return; }
+    const [y,mo,da]=d.split("-").map(Number); const [h,mi]=t.split(":").map(Number);
+    const utc=zonedWallToUtc(y,mo,da,h,mi,state.meta.refTz);
+    state.slots.push({id:"s_"+uid(), utc:utc.toISOString(), label:document.getElementById("newLabel").value.trim()});
+    await saveSlots(); render();
+  });
+  document.querySelectorAll("[data-sdel]").forEach(b=>b.addEventListener("click", async()=>{
+    state.slots=state.slots.filter(s=>s.id!==b.dataset.sdel); await saveSlots(); render();
+  }));
+
+  document.querySelectorAll("[data-redit]").forEach(el=>el.addEventListener("change", async e=>{
+    const r=state.roster.find(x=>x.id===el.dataset.id); if(r){ r[el.dataset.redit]=e.target.value; await saveRoster(); }
+  }));
+  document.querySelectorAll("[data-rdel]").forEach(b=>b.addEventListener("click", async()=>{
+    state.roster=state.roster.filter(r=>r.id!==b.dataset.rdel); await saveRoster(); render();
+  }));
+  document.getElementById("addPerson")?.addEventListener("click", async()=>{
+    state.roster.push({id:"r_"+uid(),name:"",zoneId:state.zones[0].id,email:""}); await saveRoster(); render();
+  });
+
+  document.getElementById("publishPoll")?.addEventListener("click", publishPoll);
+  document.getElementById("deletePoll")?.addEventListener("click", deleteCurrentPoll);
+
+  document.getElementById("copyAll")?.addEventListener("click", ()=>{
+    const text = state.invites.links.map(l=>`${l.name}: ${l.url}`).join("\n");
+    copyToClipboard(text, document.getElementById("copyAll"));
+  });
+  document.querySelectorAll("[data-copyone]").forEach(b=>b.addEventListener("click", ()=>{
+    copyToClipboard(b.dataset.copyone, b);
+  }));
+}
+
+function copyToClipboard(text, btn){
+  const done=()=>{ if(btn){ const o=btn.textContent; btn.textContent="Copied ✓"; setTimeout(()=>btn.textContent=o,1400); } };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done, ()=>fallbackCopy(text,done));
+  } else fallbackCopy(text,done);
+}
+function fallbackCopy(text, done){
+  const ta=document.createElement("textarea"); ta.value=text; ta.style.position="fixed"; ta.style.opacity="0";
+  document.body.appendChild(ta); ta.select(); try{ document.execCommand("copy"); done&&done(); }catch(e){}
+  document.body.removeChild(ta);
+}
+
+async function publishPoll(){
+  const stateEl = document.getElementById("publishState");
+  const named = state.roster.filter(r=>(r.name||"").trim());
+  if(!named.length){ if(stateEl) stateEl.textContent="Add at least one named invitee first."; return; }
+  if(!state.slots.length){ if(stateEl) stateEl.textContent="Add at least one candidate slot first."; return; }
+  if(stateEl) stateEl.textContent="Publishing…";
+
+  // generate (or reuse) pollId
+  const pollId = state.pollId || ("p"+randomToken(8));
+  state.pollId = pollId;
+
+  // mint per-invitee token + tokenHash (Web Crypto SHA-256)
+  const rosterOut = [];           // goes into poll.json — NO email, NO raw token
+  const links = [];               // organizer-only invite links (memory + local)
+  for(const r of named){
+    const token = randomToken(22);
+    const tokenHash = await sha256Hex(token);
+    rosterOut.push({ rosterId:r.id, name:r.name.trim(), zoneId:r.zoneId, tokenHash });
+    const url = `${pagesBase}#poll=${encodeURIComponent(pollId)}&who=${encodeURIComponent(r.id)}&t=${encodeURIComponent(token)}`;
+    links.push({ rosterId:r.id, name:r.name.trim(), token, url });
+  }
+
+  // poll.json object — verbatim save-poll 'poll' shape (no emails, tokenHash not token)
+  const poll = {
+    id: pollId,
+    title: state.meta.title,
+    meetingDateISO: state.slots.map(s=>s.utc).sort()[0],   // earliest candidate (for retention)
+    refTz: state.meta.refTz,
+    weekday: state.meta.weekday,
+    duration: state.meta.duration,
+    zones: state.zones.map(z=>({id:z.id,label:z.label,tz:z.tz,ws:z.ws,we:z.we})),
+    roster: rosterOut,
+    slots: state.slots.map(s=>({id:s.id,utc:s.utc,label:s.label||""}))
+  };
+
+  const res = await Store.savePoll(poll);
+  state.invites = { pollId, links };
+  await Store.set("currentPollId", pollId);
+  await Store.set("invites:"+pollId, state.invites);
+
+  if(stateEl){
+    stateEl.textContent = sharedMode
+      ? (res.ok ? "Published ✓ — accepted by GitHub (data appears after the Action runs)."
+                : "Dispatch failed (HTTP "+(res.status||"?")+"). Check the token/repo; links generated locally.")
+      : "Generated locally (local mode — not sent to GitHub).";
+  }
+  render();
+}
+
+async function deleteCurrentPoll(){
+  if(!state.pollId) return;
+  if(!confirm("Delete this poll and all its votes? This fires a delete-poll to GitHub and clears local copies.")) return;
+  const pid = state.pollId;
+  await Store.deletePoll(pid);
+  await Store.del("invites:"+pid);
+  await Store.del("currentPollId");
+  state.pollId=null; state.invites=null; state.votes={};
+  render();
+}
+
+/* ---- Results (organizer reads votes.json) --------------------------- */
+function viewResults(){
+  if(!state.pollId){
+    return `<div class="panel"><h2><span class="section-num">04 · </span>Results</h2>
+      <p class="note">No published poll yet. Create one in the “Poll &amp; invite” tab to start collecting votes.</p></div>`;
+  }
+  const poll = lcache("poll:"+state.pollId) || {
+    slots: state.slots, roster: state.roster.filter(r=>(r.name||"").trim())
+  };
+  const slots = [...(poll.slots||state.slots)].sort((a,b)=>a.utc.localeCompare(b.utc));
+  const roster = poll.roster || [];
+  const votes = state.votes || {};
+
+  // tallies by slot
+  const results = slots.map(s=>{
+    let y=0,m=0,n=0;
+    Object.values(votes).forEach(v=>{
+      const r=v.responses?.[s.id];
+      if(r==="yes")y++; else if(r==="maybe")m++; else if(r==="no")n++;
+    });
+    const utc=new Date(s.utc); const lp=localParts(utc,state.meta.refTz);
+    return { s, y,m,n, lp, score: y*2+m };
+  });
+  const bestScore = Math.max(...results.map(r=>r.score), -1);
+  const resultCards = results.map(r=>{
+    const isBest = r.score===bestScore && r.score>0;
+    return `
+    <div class="slot-row" ${isBest?'style="border-color:var(--accent)"':''}>
+      <div class="slot-head">
+        <div class="slot-when mono">${r.lp.wd} ${r.lp.day} ${r.lp.mon} · ${r.lp.hh}:${r.lp.mm}
+          <small>${state.meta.refTz.split("/").pop()}${r.s.label?" · "+esc(r.s.label):""}</small></div>
+        ${isBest?'<span class="best-tag">Leading</span>':''}
+      </div>
+      <div class="tally">
+        <i class="ty" style="flex:${r.y}"></i><i class="tm" style="flex:${r.m}"></i>
+        <i class="tn" style="flex:${r.n}"></i><i style="flex:0.001"></i>
+      </div>
+      <div class="tally-labels">${r.y} yes · ${r.m} maybe · ${r.n} no</div>
+    </div>`;
+  }).join("");
+
+  // awaiting computed from roster BY rosterId (not name)
+  const responded = new Set(Object.keys(votes).filter(k=>!k.startsWith("guest:")));
+  const awaiting = roster.filter(r=>!responded.has(r.rosterId||r.id)).map(r=>r.name);
+  const respondedNames = roster.filter(r=>responded.has(r.rosterId||r.id)).map(r=>r.name);
+  const guests = Object.entries(votes).filter(([k])=>k.startsWith("guest:")).map(([,v])=>v.name);
+
+  const awaitingBlock = `
+    <div class="panel">
+      <h2>Who has responded</h2>
+      <p class="note">Matched to the roster by stable rosterId — re-opening a link edits the same row, never stacks.</p>
+      <div class="tally-labels" style="margin-top:0">Responded: <b style="color:var(--ink)">${respondedNames.length?respondedNames.map(esc).join(", "):"none yet"}</b></div>
+      ${awaiting.length
+        ? `<div class="awaiting">Awaiting: <b>${awaiting.map(esc).join(", ")}</b></div>`
+        : `<div class="awaiting" style="color:var(--work)">Everyone on the invite list has responded.</div>`}
+      ${guests.length
+        ? `<div class="tally-labels" style="margin-top:8px;color:#8a5c06">Guests (not on the invite list): <b>${guests.map(esc).join(", ")}</b></div>`
+        : ``}
+    </div>`;
+
+  return `
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+      <h2><span class="section-num">04 · </span>Live results</h2>
+      <button class="btn ghost" id="refreshResults">Refresh</button>
+    </div>
+    <p class="note">Tally from votes.json. "Leading" = most yes-votes (maybe counts half).
+      ${sharedMode?"Auto-refreshes every ~12s while this tab is open.":"Local mode — shows your local optimistic copy."}</p>
+    ${slots.length?resultCards:'<p class="note">No slots.</p>'}
+  </div>
+  ${awaitingBlock}`;
+}
+function lcache(k){ try{ const v=localStorage.getItem("czmc:"+k); return v?JSON.parse(v):null; }catch(e){ return null; } }
+
+let resultsTimer=null;
+function wireResults(){
+  document.getElementById("refreshResults")?.addEventListener("click", refreshResults);
+  if(resultsTimer){ clearInterval(resultsTimer); resultsTimer=null; }
+  if(sharedMode && state.pollId){
+    resultsTimer = setInterval(()=>{ if(view==="results") refreshResults(); else { clearInterval(resultsTimer); resultsTimer=null; } }, 12000);
+  }
+}
+async function refreshResults(){
+  if(!state.pollId) return;
+  const fresh = await Store.loadVotes(state.pollId);
+  state.votes = Store.mergeVotes(state.pollId, fresh, null);
+  if(view==="results") app().innerHTML = viewResults(), wireResults();
+}
+
+/* ---- Setup ---------------------------------------------------------- */
+function viewSetup(){
+  const tzOpt = (sel)=>COMMON_TZS.map(t=>`<option value="${t}" ${t===sel?"selected":""}>${t}</option>`).join("");
+  const zoneRows = state.zones.map(z=>`
+    <tr>
+      <td><input type="text" data-zedit="label" data-id="${z.id}" value="${esc(z.label)}" style="min-width:160px"></td>
+      <td><select data-zedit="tz" data-id="${z.id}">${tzOpt(z.tz)}</select></td>
+      <td><input type="time" data-zedit="ws" data-id="${z.id}" value="${fmtMin(z.ws)}" style="width:108px"></td>
+      <td><input type="time" data-zedit="we" data-id="${z.id}" value="${fmtMin(z.we)}" style="width:108px"></td>
+      <td><button class="link" data-zdel="${z.id}">remove</button></td>
+    </tr>`).join("");
+
+  return `
+  <div class="panel">
+    <h2>Meeting</h2>
+    <div class="row">
+      <div><label class="fld">Title</label><input type="text" id="setTitle" value="${esc(state.meta.title)}"></div>
+      <div><label class="fld">Reference zone</label><select id="setRef">${tzOpt(state.meta.refTz)}</select></div>
+      <div><label class="fld">Cadence day</label><select id="setWd">${WD.map((w,i)=>
+        `<option value="${i}" ${i===state.meta.weekday?"selected":""}>${w}day</option>`).join("")}</select></div>
+      <div><label class="fld">Duration (min)</label><input type="number" id="setDur" value="${state.meta.duration}" min="15" step="15"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Zones &amp; working hours</h2>
+    <p class="note">Working hours drive every comfort colour. Tighten them per zone if a team won't take 18:00 calls.</p>
+    <table class="list"><thead><tr style="font-size:11px;color:var(--muted)">
+      <td>Label</td><td>Timezone</td><td>Work start</td><td>Work end</td><td></td></tr></thead>
+      <tbody>${zoneRows}</tbody></table>
+    <div style="margin-top:12px"><button class="btn ghost" id="addZone">+ Add zone</button></div>
+  </div>
+
+  <div class="panel">
+    <h2>Data &amp; mode</h2>
+    <p class="storage-note">${sharedMode
+      ? `Shared mode for <b>${esc(GH.owner)}/${esc(GH.repo)}</b>. Organizer setup + invitee emails live in this browser's localStorage only. Published polls and votes live on the <b>poll-data</b> branch (poll.json + votes.json) and are publicly readable. The Store adapter at the top of the file is the single persistence swap point.`
+      : `Local mode — no GitHub token injected, so nothing leaves this browser. Everything is stored in localStorage. Deploy to GitHub (inject the dispatch token) to collect votes from others.`}</p>
+    <div style="margin-top:12px"><button class="btn danger" id="resetAll">Reset local setup data</button></div>
+  </div>`;
+}
+
+function wireSetup(){
+  const bind=(id,key,fn)=>{const el=document.getElementById(id); if(el) el.addEventListener("change",async e=>{
+    state.meta[key]=fn?fn(e.target.value):e.target.value; await saveMeta(); renderHeader();
+    if(key==="weekday"||key==="refTz") render();
+  });};
+  bind("setTitle","title"); bind("setRef","refTz");
+  bind("setWd","weekday",v=>parseInt(v,10)); bind("setDur","duration",v=>parseInt(v,10)||60);
+
+  document.querySelectorAll("[data-zedit]").forEach(el=>el.addEventListener("change",async e=>{
+    const z=zoneById(el.dataset.id); const k=el.dataset.zedit; let v=e.target.value;
+    if(k==="ws"||k==="we"){const[h,m]=v.split(":").map(Number); v=h*60+m;}
+    z[k]=v; await saveZones(); render();
+  }));
+  document.querySelectorAll("[data-zdel]").forEach(b=>b.addEventListener("click",async()=>{
+    if(state.zones.length<=1){alert("Keep at least one zone.");return;}
+    state.zones=state.zones.filter(z=>z.id!==b.dataset.zdel); await saveZones(); render();
+  }));
+  document.getElementById("addZone")?.addEventListener("click",async()=>{
+    state.zones.push({id:"z_"+uid(),label:"New zone",tz:"UTC",ws:9*60,we:17*60}); await saveZones(); render();
+  });
+
+  document.getElementById("resetAll")?.addEventListener("click",async()=>{
+    if(!confirm("Reset local meeting/zone/roster/slot setup to defaults? (Published GitHub poll data is not touched.)")) return;
+    for(const k of ["meta","zones","roster","slots","organizer"]) await Store.del(k);
+    await loadOrganizerState(); setView("overlap");
+  });
+}
+
+/* ====================================================================
+   7b. RESPONDER VIEW — rendered ONLY when location.hash has poll=<id>.
+   Single-column guest ballot. No setup/overlap/recurring tabs, no
+   roster list, no live tally (seeing the tally biases late responders).
+   ==================================================================== */
+const Responder = (() => {
+  let poll=null, pollId=null, rawToken=null, rosterId=null;
+  let me=null;          // {name, zoneId, responses, guest}
+  let myZoneTz=null;
+  let pollTimer=null;
+  let saving=false;
+
+  async function start(h){
+    pollId = h.poll;
+    rawToken = h.t || null;        // kept in memory only
+    rosterId = h.who || null;
+
+    // strip token (and who) from the VISIBLE url; keep token in memory
+    try{
+      const clean = location.pathname + location.search + (pollId?("#poll="+encodeURIComponent(pollId)):"");
+      history.replaceState(null, "", clean);
+    }catch(e){}
+
+    rootEl().className = "wrap narrow";
+    rootEl().innerHTML = `<div class="loading">Loading invitation…</div>`;
+
+    poll = await Store.loadPoll(pollId);
+    if(!poll){
+      rootEl().innerHTML = `
+        <div class="panel"><h2>Invitation not found</h2>
+        <p class="note">This poll hasn't synced yet, or the link is wrong. If you just received it, wait a moment and reload.</p>
+        <button class="btn ghost" onclick="location.reload()">Reload</button></div>`;
+      return;
+    }
+
+    // resolve identity
+    const rosterEntry = rosterId ? (poll.roster||[]).find(r=>r.rosterId===rosterId) : null;
+    const detected = detectTz();
+    // detected zone -> match to a poll zone, else use roster's zone, else first
+    let matchedZone = (poll.zones||[]).find(z=>z.tz===detected);
+    const defaultZoneId = matchedZone ? matchedZone.id
+      : (rosterEntry ? rosterEntry.zoneId : (poll.zones?.[0]?.id));
+
+    // hydrate any in-progress local vote for this identity
+    const localKey = rosterEntry ? rosterEntry.rosterId : null;
+    const cache = lcache("votes:"+pollId) || {};
+    const prior = localKey ? cache[localKey] : null;
+
+    me = {
+      name: rosterEntry ? rosterEntry.name : (prior?.name || ""),
+      zoneId: prior?.zoneId || defaultZoneId,
+      responses: prior?.responses ? {...prior.responses} : {},
+      guest: !rosterEntry   // guest until a roster identity is chosen
+    };
+
+    render();
+    startPolling();
+  }
+
+  function myZone(){
+    return (poll.zones||[]).find(z=>z.id===me.zoneId) || poll.zones?.[0];
+  }
+
+  function organizerName(){
+    // organizer name isn't in poll.json; show a neutral phrasing if unknown
+    return null;
+  }
+
+  function render(){
+    const z = myZone(); myZoneTz = z?.tz || detectTz();
+    const slots = [...(poll.slots||[])].sort((a,b)=>a.utc.localeCompare(b.utc));
+
+    const rosterEntry = rosterId ? (poll.roster||[]).find(r=>r.rosterId===rosterId) : null;
+
+    // identity block
+    let identHtml;
+    if(rosterEntry){
+      identHtml = `
+        <p class="who-line">Responding as <b>${esc(me.name)}</b>
+          — <button class="link" id="switchWho">not you? switch</button></p>`;
+    } else if((poll.roster||[]).length){
+      // name-select from roster fallback when no &who
+      const opts = (poll.roster||[]).map(r=>`<option value="${esc(r.rosterId)}" ${me.rosterPick===r.rosterId?"selected":""}>${esc(r.name)}</option>`).join("");
+      identHtml = `
+        <label class="fld">Who are you?</label>
+        <select id="pickWho">
+          <option value="">— choose your name —</option>
+          ${opts}
+          <option value="__guest__" ${me.guest&&me.name?"selected":""}>I'm not on the list (guest)</option>
+        </select>
+        <div id="guestNameWrap" class="${me.guest?'':'hide'}" style="margin-top:10px">
+          <label class="fld">Your name (guest)</label>
+          <input type="text" id="guestName" value="${esc(me.guest?me.name:'')}" placeholder="Type your name">
+          <div class="who-guest">You'll be recorded as a guest — not on the invite list.</div>
+        </div>`;
+    } else {
+      identHtml = `
+        <label class="fld">Your name</label>
+        <input type="text" id="guestName" value="${esc(me.name)}" placeholder="Type your name">
+        <div class="who-guest">You'll be recorded as a guest — not on the invite list.</div>`;
+    }
+
+    const slotHtml = slots.map(s=>{
+      const utc=new Date(s.utc);
+      const myLp = localParts(utc, myZoneTz);
+      const myC = classify(myLp.min, myZone() || {ws:9*60,we:17*60});
+      const refLp = localParts(utc, poll.refTz);
+      const resp = me.responses?.[s.id] || null;
+      const seg = ["yes","maybe","no"].map(opt=>{
+        const labels={yes:"Yes",maybe:"Maybe",no:"No"};
+        return `<button data-slot="${s.id}" data-resp="${opt}" ${resp===opt?`data-on="${opt}"`:""}>${labels[opt]}</button>`;
+      }).join("");
+      return `
+      <div class="resp-slot">
+        <div>
+          <span class="resp-mytime mono">${myLp.wd} ${myLp.hh}:${myLp.mm}</span>
+          <span class="resp-comfort ${myC}">${CLASS_LABEL[myC]}</span>
+        </div>
+        <div class="resp-reftime">${refLp.wd} ${refLp.day} ${refLp.mon} · <b class="mono">${refLp.hh}:${refLp.mm}</b>
+          ${esc(poll.refTz.split("/").pop())}${s.label?" · "+esc(s.label):""}</div>
+        <div class="resp-seg">${seg}</div>
+      </div>`;
+    }).join("");
+
+    const zoneSel = `
+      <label class="fld" style="margin-top:14px">Your timezone (auto-detected: ${esc(detectTz())})</label>
+      <select id="respZone">${(poll.zones||[]).map(z=>
+        `<option value="${z.id}" ${z.id===me.zoneId?"selected":""}>${esc(z.label)}</option>`).join("")}</select>`;
+
+    rootEl().innerHTML = `
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">You're invited</p>
+        <h1>${esc(poll.title||"Meeting time")}</h1>
+        <p class="sub">You've been invited to help find a time that works. Pick Yes / Maybe / No for each option below — times are shown in your own zone first.</p>
+      </div>
+    </header>
+
+    <div class="panel">
+      ${identHtml}
+      ${zoneSel}
+    </div>
+
+    <div class="panel">
+      <h2>Which of these work for you?</h2>
+      ${slots.length?slotHtml:'<p class="note">No candidate times in this poll.</p>'}
+      <div class="savebar">
+        <button class="btn" id="saveVote" style="width:100%">Save my answers</button>
+        <div id="saveState" class="save-state"></div>
+      </div>
+      <p class="trust">Who can see this: your name and your Yes/Maybe/No answers are committed to a
+        public GitHub branch for this poll, visible to anyone with the repo link. Your email is never
+        collected or sent. ${sharedMode?"":"(Local preview — nothing is sent anywhere.)"}</p>
+    </div>`;
+
+    wire(slots);
+  }
+
+  function wire(slots){
+    document.getElementById("switchWho")?.addEventListener("click", ()=>{
+      // drop the resolved identity, let them pick / go guest
+      rosterId=null; rawToken=null;
+      me.guest=true; me.name=""; me.rosterPick=null;
+      render();
+    });
+
+    const pickWho=document.getElementById("pickWho");
+    if(pickWho) pickWho.addEventListener("change", e=>{
+      const v=e.target.value;
+      if(v==="__guest__"){ me.guest=true; me.name=""; me.rosterPick=null; rosterId=null; }
+      else if(v){
+        const r=(poll.roster||[]).find(x=>x.rosterId===v);
+        me.guest=false; me.rosterPick=v; rosterId=v; rawToken=null; // no token when picked manually
+        me.name=r?r.name:"";
+      } else { me.rosterPick=null; }
+      render();
+    });
+    document.getElementById("guestName")?.addEventListener("input", e=>{ me.name=e.target.value; });
+
+    document.getElementById("respZone")?.addEventListener("change", e=>{ me.zoneId=e.target.value; render(); });
+
+    document.querySelectorAll(".resp-seg button").forEach(b=>{
+      b.addEventListener("click", ()=>{
+        const sid=b.dataset.slot, r=b.dataset.resp;
+        me.responses=me.responses||{};
+        me.responses[sid] = (me.responses[sid]===r)? null : r;
+        if(!me.responses[sid]) delete me.responses[sid];
+        // re-render just the segment states (cheap full re-render keeps it simple)
+        render();
+      });
+    });
+
+    document.getElementById("saveVote")?.addEventListener("click", save);
+  }
+
+  async function save(){
+    if(saving) return;
+    const stEl=document.getElementById("saveState");
+    const name=(me.name||"").trim();
+    if(!name){ setState("err","Add your name first so your answer is attributed."); document.getElementById("guestName")?.focus(); return; }
+    if(!Object.keys(me.responses||{}).length){ setState("err","Pick Yes / Maybe / No on at least one option."); return; }
+
+    saving=true; setState("", "Saving…"); document.getElementById("saveVote").disabled=true;
+
+    // build cast-vote payload per contract.
+    // A named (non-guest) vote REQUIRES the per-person token — the ingest Action rejects
+    // token-less named votes. So a manual roster pick (no &t token) is recorded as an
+    // unverified guest under their own name, matching the honor-system posture.
+    const isGuest = me.guest || !rosterId || !rawToken;
+    const payload = {
+      op:"cast-vote",
+      pollId: pollId,
+      rosterId: isGuest ? null : rosterId,
+      token: (!isGuest && rawToken) ? rawToken : undefined,
+      name: name,
+      zoneId: me.zoneId,
+      responses: { ...me.responses },
+      guest: !!isGuest
+    };
+    if(payload.token===undefined) delete payload.token;
+
+    // Store.castVote does optimistic local write + dispatch; surface the result.
+    let res;
+    try{ res = await Store.castVote(payload); }
+    catch(e){ res = { ok:false, error:e }; }
+
+    document.getElementById("saveVote").disabled=false;
+    saving=false;
+
+    if(!sharedMode){
+      setState("ok","Saved locally ✓ (local preview — deploy to GitHub to send this for real).");
+      return;
+    }
+    if(res && res.ok){
+      setState("ok","Saved ✓ — you can close this tab. Your answers are recorded.");
+    } else {
+      // NEVER drop the user's picks — they remain in me.responses + local cache
+      setState("err","Couldn't save — your picks are kept. Tap “Save my answers” to retry."
+        + (res&&res.status?` (HTTP ${res.status})`:""));
+    }
+  }
+
+  function setState(kind, msg){
+    const el=document.getElementById("saveState"); if(!el) return;
+    el.className="save-state"+(kind?" "+kind:""); el.textContent=msg;
+  }
+
+  function startPolling(){
+    if(!sharedMode) return;
+    if(pollTimer) clearInterval(pollTimer);
+    // reconcile from votes.json, but never discard the in-flight local selection
+    pollTimer=setInterval(async ()=>{
+      const fresh = await Store.loadVotes(pollId);
+      const protectKey = (me.guest||!rosterId||!rawToken) ? ("guest:"+slugify(me.name)) : rosterId;
+      Store.mergeVotes(pollId, fresh, protectKey);   // keeps local optimistic copy
+      // we do NOT re-render the responder over their in-progress picks; tally is hidden anyway.
+    }, 12000);
+  }
+
+  return { start };
+})();
+
+/* ====================================================================
+   8. INIT — route by hash
+   ==================================================================== */
+(async function init(){
+  try{
+    const h = parseHash();
+    if(h.poll){
+      // RESPONDER MODE
+      await Responder.start(h);
+    } else {
+      // ORGANIZER MODE
+      await loadOrganizerState();
+      organizerShell();
+      render();
+    }
+  }catch(err){
+    console.error(err);
+    rootEl().innerHTML = `<div class="wrap"><div class="panel"><p class="note">Couldn't load: ${esc(err.message)}.
+      Try reloading.</p></div></div>`;
+  }
+})();
+// re-route if the hash changes (e.g. organizer pastes an invite link)
+window.addEventListener("hashchange", ()=>{ location.reload(); });
+</script>

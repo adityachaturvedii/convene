@@ -1,0 +1,82 @@
+name: deploy
+
+# Publishes the static app to GitHub Pages from 'main'. Before upload we inject
+# the dispatch token + owner/repo into a COPY of index.html.
+#
+# NOTE: by necessity the dispatch token becomes visible in the deployed page
+# (it must be readable by the browser to fire repository_dispatch). Scope the
+# POLL_DISPATCH_TOKEN secret to a fine-grained PAT with ONLY "contents: write"
+# (or repository_dispatch) on this one repo, and rotate it as needed.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent Pages deployment; let in-progress finish.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Stage site and inject config
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          # Copy everything except the workflow/scripts plumbing into _site.
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='scripts' \
+            --exclude='_site' \
+            ./ _site/
+
+          # Inject owner/repo/token via Node (safe vs. slashes/special chars in
+          # the token — never use sed for this).
+          node -e '
+            const fs = require("fs");
+            const p = "_site/index.html";
+            if (!fs.existsSync(p)) {
+              console.error("index.html not found in _site");
+              process.exit(1);
+            }
+            let html = fs.readFileSync(p, "utf8");
+            const owner = process.env.GH_OWNER || "";
+            const repo  = process.env.GH_REPO  || "";
+            const token = process.env.POLL_DISPATCH_TOKEN || "";
+            html = html.split("__GH_OWNER__").join(owner);
+            html = html.split("__GH_REPO__").join(repo);
+            html = html.split("__POLL_DISPATCH_TOKEN__").join(token);
+            fs.writeFileSync(p, html);
+            console.log("Injected config: owner=%s repo=%s token=%s",
+              owner, repo, token ? "(set)" : "(empty => LOCAL-ONLY)");
+          '
+        env:
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO: ${{ github.event.repository.name }}
+          POLL_DISPATCH_TOKEN: ${{ secrets.POLL_DISPATCH_TOKEN }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

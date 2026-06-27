@@ -1,0 +1,97 @@
+name: purge
+
+# Retention: delete any polls/<id> whose poll.json meetingDateISO + 90 days is
+# already in the past. Runs daily and on demand.
+on:
+  schedule:
+    - cron: '17 3 * * *' # 03:17 UTC daily
+  workflow_dispatch:
+
+# Share the data-branch write lock so we never race the ingest workflow.
+concurrency:
+  group: poll-data-write
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout poll-data branch
+        run: |
+          set -euo pipefail
+          git init -q .
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote --exit-code --heads origin poll-data >/dev/null 2>&1; then
+            git fetch -q --depth=50 origin poll-data
+            git checkout -q -B poll-data origin/poll-data
+          else
+            echo "poll-data branch does not exist yet; nothing to purge."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Delete expired polls
+        if: env.SKIP != '1'
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const root = "polls";
+            const NINETY_DAYS = 90 * 24 * 60 * 60 * 1000;
+            const now = Date.now();
+            if (!fs.existsSync(root)) { console.log("no polls dir; nothing to do"); process.exit(0); }
+            let removed = 0;
+            for (const id of fs.readdirSync(root)) {
+              const dir = path.join(root, id);
+              if (!fs.statSync(dir).isDirectory()) continue;
+              const pj = path.join(dir, "poll.json");
+              if (!fs.existsSync(pj)) continue;
+              let poll;
+              try { poll = JSON.parse(fs.readFileSync(pj, "utf8")); }
+              catch (e) { console.warn("skip unparseable %s: %s", pj, e.message); continue; }
+              const iso = poll && poll.meetingDateISO;
+              const t = iso ? Date.parse(iso) : NaN;
+              if (Number.isNaN(t)) { console.warn("skip %s: bad meetingDateISO %j", id, iso); continue; }
+              if (t + NINETY_DAYS < now) {
+                fs.rmSync(dir, { recursive: true, force: true });
+                console.log("purged poll %s (meetingDateISO=%s)", id, iso);
+                removed++;
+              }
+            }
+            console.log("purge complete: %d poll(s) removed", removed);
+          '
+
+      - name: Commit and push if changed
+        if: env.SKIP != '1'
+        run: |
+          set -euo pipefail
+          git add -A polls
+          if git diff --cached --quiet; then
+            echo "No expired polls; nothing to commit."
+            exit 0
+          fi
+          git commit -q -m "purge: retention cleanup @ ${{ github.run_id }}"
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin poll-data
+            if git pull -q --rebase origin poll-data; then
+              if git push -q origin HEAD:poll-data; then
+                echo "Pushed on attempt $attempt."
+                exit 0
+              fi
+            fi
+            echo "Push attempt $attempt failed; retrying..."
+            sleep 3
+          done
+          echo "Failed to push after retries."
+          exit 1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

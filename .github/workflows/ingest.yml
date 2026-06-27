@@ -1,0 +1,105 @@
+name: ingest
+
+# Browser fires a repository_dispatch of type "poll-op" carrying a
+# client_payload (save-poll | cast-vote | delete-poll). This workflow applies
+# the change to the orphan 'poll-data' branch, which is the JSON "database".
+on:
+  repository_dispatch:
+    types: [poll-op]
+
+# Serialize all writes to the data branch. cancel-in-progress MUST be false so
+# concurrent votes are queued and applied one after another, never dropped.
+concurrency:
+  group: poll-data-write
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the poll-data branch. On first run it may not exist yet, so
+      # we fetch the repo without a branch and create poll-data as an orphan.
+      - name: Checkout poll-data branch (create if missing)
+        run: |
+          set -euo pipefail
+          git init -q .
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote --exit-code --heads origin poll-data >/dev/null 2>&1; then
+            echo "poll-data exists; fetching it"
+            git fetch -q --depth=50 origin poll-data
+            git checkout -q -B poll-data origin/poll-data
+          else
+            echo "poll-data does not exist; creating orphan branch"
+            git checkout -q --orphan poll-data
+            git rm -rq --cached . 2>/dev/null || true
+            mkdir -p polls
+            echo "# poll-data" > README.md
+            git add README.md
+            git commit -q -m "init poll-data branch"
+            git push -q origin poll-data
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # We need scripts/ingest.mjs, which lives on 'main', not on 'poll-data'.
+      # Fetch it from main into a temp path without disturbing the working tree.
+      - name: Fetch ingest script from main
+        run: |
+          set -euo pipefail
+          git fetch -q --depth=1 origin main
+          mkdir -p scripts
+          git show origin/main:scripts/ingest.mjs > scripts/ingest.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Apply poll operation
+        run: node scripts/ingest.mjs
+        env:
+          # Pass the entire client_payload as a JSON string.
+          POLL_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+
+      - name: Commit and push (serialized via rebase)
+        run: |
+          set -euo pipefail
+          # Drop the transient script so it is never committed to poll-data.
+          rm -f scripts/ingest.mjs
+          rmdir scripts 2>/dev/null || true
+
+          git add -A polls
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit (clean no-op)."
+            exit 0
+          fi
+
+          git commit -q -m "ingest: ${{ github.event.client_payload.op }} @ ${{ github.run_id }}"
+
+          # Serialize concurrent runs: rebase onto the latest remote tip before
+          # pushing. Retry the rebase+push loop a few times under contention.
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin poll-data
+            if git pull -q --rebase origin poll-data; then
+              if git push -q origin HEAD:poll-data; then
+                echo "Pushed on attempt $attempt."
+                exit 0
+              fi
+            fi
+            echo "Push attempt $attempt failed; retrying..."
+            sleep 3
+          done
+          echo "Failed to push after retries."
+          exit 1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
