@@ -292,11 +292,16 @@ const GH = {
   dispatchToken: "__POLL_DISPATCH_TOKEN__"  // injected from Actions secret at deploy; if it still
                                             // equals this placeholder or is empty => LOCAL-ONLY mode
 };
-// sharedMode = token looks real (not the placeholder, non-empty)
-const TOKEN_PLACEHOLDER = "__POLL_DISPATCH_TOKEN__";
-const sharedMode = !!GH.dispatchToken && GH.dispatchToken !== TOKEN_PLACEHOLDER;
-const ownerSet = GH.owner && GH.owner !== "__GH_OWNER__";
-const repoSet  = GH.repo  && GH.repo  !== "__GH_REPO__";
+// sharedMode = a real token was injected at deploy.
+// IMPORTANT: do NOT compare against a literal copy of "__POLL_DISPATCH_TOKEN__" —
+// the deploy's find-and-replace would substitute that copy too, making it equal
+// to the injected token and forcing sharedMode false forever. Instead detect the
+// un-injected placeholder by its "__" prefix; a real PAT never starts with "__".
+const sharedMode = !!GH.dispatchToken && !GH.dispatchToken.startsWith("__");
+const ownerSet = GH.owner && GH.owner !== "__GH_OWNER__" && !GH.owner.startsWith("__");
+const repoSet  = GH.repo  && GH.repo  !== "__GH_REPO__"  && !GH.repo.startsWith("__");
+// reads can happen whenever owner/repo are known (keyless via raw), even without a token
+const remoteEnabled = ownerSet && repoSet;
 const pagesBase = (ownerSet && repoSet)
   ? `https://${GH.owner}.github.io/${GH.repo}/`
   : (location.origin + location.pathname);
@@ -345,6 +350,9 @@ const GHIO = {
   apiUrl(path){
     return `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/${path}`;
   },
+  rawUrl(path){
+    return `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.dataBranch}/${path}`;
+  },
 
   // GET a JSON file on the data branch. 200 => {json, sha}; 404 => {json:null, sha:null}.
   async ghGetFile(path){
@@ -357,6 +365,24 @@ const GHIO = {
     let json = null;
     try{ json = text.trim() ? JSON.parse(text) : null; }catch(e){ json = null; }
     return { json, sha:data.sha };
+  },
+
+  // KEYLESS read via raw.githubusercontent (public, CDN). No token, no API rate
+  // limit — so a published poll is findable on ANY device/network even if that
+  // page never got a token injected. Returns the parsed JSON or null on 404.
+  async rawGetJson(path){
+    const res = await fetch(this.rawUrl(path) + "?cb=" + Date.now(), { cache:"no-store" });
+    if(res.status === 404) return null;
+    if(!res.ok) throw new Error("rawGetJson "+path+" failed: HTTP "+res.status);
+    const text = await res.text();
+    try{ return text.trim() ? JSON.parse(text) : null; }catch(e){ return null; }
+  },
+
+  // Best read for the situation: authenticated+fresh when we hold a token,
+  // otherwise the keyless raw fallback so reads still work.
+  async readJson(path){
+    if(sharedMode){ try{ return (await this.ghGetFile(path)).json; }catch(e){ /* fall back */ } }
+    return this.rawGetJson(path);
   },
 
   // PUT (create/update) a JSON file. Returns the new content sha.
@@ -476,21 +502,22 @@ const Store = (() => {
       return { ok:false, status:e && e.status, error:e };
     }
   }
-  // loadPoll: prefer fresh remote (sharedMode), fall back to local cache
+  // loadPoll: try remote (authenticated if we have a token, else keyless raw) so
+  // a published poll is findable on any device; fall back to local cache.
   async function loadPoll(pid){
-    if(sharedMode){
+    if(remoteEnabled){
       try{
-        const { json } = await GHIO.ghGetFile(GHIO.pollJsonPath(pid));
+        const json = await GHIO.readJson(GHIO.pollJsonPath(pid));
         if(json){ lset("poll:"+pid, json); return json; }
       }catch(e){ /* fall through to local cache on transient error */ }
     }
     return lget("poll:"+pid);
   }
-  // loadVotes: prefer fresh remote, fall back to local optimistic cache
+  // loadVotes: same remote-first (keyless-capable), fall back to local optimistic cache
   async function loadVotes(pid){
-    if(sharedMode){
+    if(remoteEnabled){
       try{
-        const { json } = await GHIO.ghGetFile(GHIO.votesJsonPath(pid));
+        const json = await GHIO.readJson(GHIO.votesJsonPath(pid));
         if(json){ return json; }
       }catch(e){ /* fall through to local cache */ }
     }
