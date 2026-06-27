@@ -1,6 +1,6 @@
 import { loadOrganizerState, adoptRemotePoll, setAppMode, setView, state } from "./state.js";
 import { parseHash } from "./utils.js";
-import { organizerShell, render, setConvergeAllOnly, viewResults, wireResults } from "./ui-components.js";
+import { organizerShell, render } from "./ui-components.js";
 import { Responder } from "./responder.js";
 import { Store, sharedMode } from "./github-store.js";
 import { app } from "./ui-components.js";

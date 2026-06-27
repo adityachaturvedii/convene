@@ -1,4 +1,4 @@
-import { state, appState, setConvergeAllOnly, loadMyPolls as doLoadMyPolls } from "./state.js";
+import { state, appState, setConvergeAllOnly, lookupMyPolls as doLoadMyPolls } from "./state.js";
 import { esc } from "./utils.js";
 import { localPartsFull, zonedWallToUtc, localParts } from "./tz-engine.js";
 import { Store, sharedMode } from "./github-store.js";

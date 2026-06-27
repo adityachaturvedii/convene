@@ -1,7 +1,7 @@
-import { state, appState } from "./state.js";
+import { state, appState, detectTz } from "./state.js";
 import { Store, sharedMode } from "./github-store.js";
 import { esc, sha256Hex, isValidEmail } from "./utils.js";
-import { detectTz, localPartsFull, refWeekday, zonedWallToUtc, localParts, classify, CLASS_LABEL } from "./tz-engine.js";
+import { localPartsFull, refWeekday, zonedWallToUtc, localParts, classify, CLASS_LABEL } from "./tz-engine.js";
 import { rootEl } from "./ui-components.js";
 import { convergencePanel, rankedTally } from "./ui-results.js";
 
