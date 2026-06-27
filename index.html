@@ -298,8 +298,12 @@ const GH = {
 // to the injected token and forcing sharedMode false forever. Instead detect the
 // un-injected placeholder by its "__" prefix; a real PAT never starts with "__".
 const sharedMode = !!GH.dispatchToken && !GH.dispatchToken.startsWith("__");
-const ownerSet = GH.owner && GH.owner !== "__GH_OWNER__" && !GH.owner.startsWith("__");
-const repoSet  = GH.repo  && GH.repo  !== "__GH_REPO__"  && !GH.repo.startsWith("__");
+// Detect un-injected placeholders ONLY by their "__" prefix. Never compare against
+// a literal "__GH_OWNER__"/"__GH_REPO__" copy — the deploy's find-and-replace would
+// rewrite that copy too (it rewrote __POLL_DISPATCH_TOKEN__ the same way), turning
+// the comparison into x !== x and silently disabling remote reads.
+const ownerSet = !!GH.owner && !GH.owner.startsWith("__");
+const repoSet  = !!GH.repo  && !GH.repo.startsWith("__");
 // reads can happen whenever owner/repo are known (keyless via raw), even without a token
 const remoteEnabled = ownerSet && repoSet;
 const pagesBase = (ownerSet && repoSet)
