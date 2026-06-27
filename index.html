@@ -264,6 +264,49 @@
     .rec-time{font-size:23px;} .resp-mytime{font-size:25px;}
   }
   @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+
+  /* ---- results / dashboard redesign ---- */
+  .res-hero{border-radius:12px;padding:16px 18px;margin-bottom:16px;
+    background:linear-gradient(180deg,#E9F5F1,#E1F2EE);border:1px solid #bfe5dd;}
+  .res-hero .lead-k{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:#0a6f60;font-weight:600;}
+  .res-hero .lead-t{font-size:21px;font-weight:600;margin-top:3px;letter-spacing:-.01em;}
+  .res-hero .lead-s{font-size:12.5px;color:#0a6f60;margin-top:3px;}
+  .res-hero.empty{background:var(--paper);border-color:var(--line);}
+  .res-hero.empty .lead-k,.res-hero.empty .lead-s{color:var(--muted);}
+  .res-prog-wrap{margin:2px 0 16px;}
+  .res-prog-lab{font-size:12px;color:var(--muted);margin-bottom:6px;}
+  .res-prog-lab b{color:var(--ink);font-weight:600;}
+  .res-prog{height:8px;border-radius:5px;background:#E7ECEE;overflow:hidden;}
+  .res-prog i{display:block;height:100%;background:var(--work);border-radius:5px;transition:width .4s;}
+  .res-card{border:1px solid var(--line);border-radius:11px;padding:14px 16px;margin-bottom:11px;background:var(--panel);}
+  .res-card.leading{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);}
+  .res-top{display:flex;align-items:center;gap:11px;margin-bottom:11px;flex-wrap:wrap;}
+  .res-rank{width:23px;height:23px;border-radius:50%;background:var(--paper);border:1px solid var(--line-strong);
+    display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--muted);flex:0 0 auto;
+    font-family:"IBM Plex Mono",monospace;}
+  .res-card.leading .res-rank{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .res-when{flex:1;min-width:120px;}
+  .res-time{font-family:"IBM Plex Mono",monospace;font-size:17px;font-weight:500;}
+  .res-sub{font-size:11.5px;color:var(--muted);margin-top:1px;}
+  .res-badge{font-size:10.5px;font-weight:600;color:#fff;background:var(--accent);padding:3px 10px;border-radius:20px;letter-spacing:.02em;}
+  .res-mine{font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:20px;}
+  .res-mine.yes{background:var(--work-bg);color:#0a6f60;} .res-mine.maybe{background:var(--edge-bg);color:#8a5c06;} .res-mine.no{background:var(--off-bg);color:#a23a4e;}
+  .res-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;background:#EDF1F2;}
+  .res-bar .seg{height:100%;transition:width .4s;}
+  .res-bar .seg-y{background:var(--work);} .res-bar .seg-m{background:var(--edge);} .res-bar .seg-n{background:var(--off);}
+  .res-counts{display:flex;gap:15px;margin-top:9px;font-size:12px;flex-wrap:wrap;font-family:"IBM Plex Mono",monospace;}
+  .res-counts span{display:inline-flex;align-items:center;gap:5px;}
+  .res-counts span::before{content:"";width:8px;height:8px;border-radius:2px;display:inline-block;}
+  .res-counts .cy{color:#0a6f60;} .res-counts .cy::before{background:var(--work);}
+  .res-counts .cm{color:#8a5c06;} .res-counts .cm::before{background:var(--edge);}
+  .res-counts .cn{color:#a23a4e;} .res-counts .cn::before{background:var(--off);}
+  .res-counts .cnone{color:var(--muted);} .res-counts .cnone::before{background:#D7DDE0;}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;}
+  .chip-r,.chip-a,.chip-g{font-size:12px;padding:4px 11px;border-radius:20px;border:1px solid;}
+  .chip-r{background:var(--work-bg);color:#0a6f60;border-color:#bfe5dd;}
+  .chip-a{background:var(--paper);color:var(--muted);border-color:var(--line-strong);}
+  .chip-g{background:var(--edge-bg);color:#8a5c06;border-color:#e8d7a8;}
 </style>
 
 <div class="wrap" id="root">
@@ -1450,71 +1493,105 @@ function viewResults(){
   const poll = lcache("poll:"+state.pollId) || {
     slots: state.slots, roster: state.roster.filter(r=>(r.name||"").trim())
   };
-  const slots = [...(poll.slots||state.slots)].sort((a,b)=>a.utc.localeCompare(b.utc));
+  const slots = [...(poll.slots||state.slots)];
   const roster = poll.roster || [];
   const votes = state.votes || {};
+  const refTz = poll.refTz || state.meta.refTz;
 
-  // tallies by slot
-  const results = slots.map(s=>{
-    let y=0,m=0,n=0;
-    Object.values(votes).forEach(v=>{
-      const r=v.responses?.[s.id];
-      if(r==="yes")y++; else if(r==="maybe")m++; else if(r==="no")n++;
-    });
-    const utc=new Date(s.utc); const lp=localParts(utc,state.meta.refTz);
-    return { s, y,m,n, lp, score: y*2+m };
-  });
-  const bestScore = Math.max(...results.map(r=>r.score), -1);
-  const resultCards = results.map(r=>{
-    const isBest = r.score===bestScore && r.score>0;
-    return `
-    <div class="slot-row" ${isBest?'style="border-color:var(--accent)"':''}>
-      <div class="slot-head">
-        <div class="slot-when mono">${r.lp.wd} ${r.lp.day} ${r.lp.mon} · ${r.lp.hh}:${r.lp.mm}
-          <small>${state.meta.refTz.split("/").pop()}${r.s.label?" · "+esc(r.s.label):""}</small></div>
-        ${isBest?'<span class="best-tag">Leading</span>':''}
-      </div>
-      <div class="tally">
-        <i class="ty" style="flex:${r.y}"></i><i class="tm" style="flex:${r.m}"></i>
-        <i class="tn" style="flex:${r.n}"></i><i style="flex:0.001"></i>
-      </div>
-      <div class="tally-labels">${r.y} yes · ${r.m} maybe · ${r.n} no</div>
-    </div>`;
-  }).join("");
+  const { cards, best, total } = rankedTally(slots, votes, refTz, {});
 
-  // awaiting computed from roster BY rosterId (not name). Non-roster keys are
-  // either legacy "guest:" rows or central "c:" rows (CHANGE 2).
+  // who has responded (roster by rosterId; guests/central are separate)
   const isRosterKey = k => !k.startsWith("guest:") && !k.startsWith("c:");
   const responded = new Set(Object.keys(votes).filter(isRosterKey));
-  const awaiting = roster.filter(r=>!responded.has(r.rosterId||r.id)).map(r=>r.name);
   const respondedNames = roster.filter(r=>responded.has(r.rosterId||r.id)).map(r=>r.name);
+  const awaiting = roster.filter(r=>!responded.has(r.rosterId||r.id)).map(r=>r.name);
   const guests = Object.entries(votes).filter(([k])=>!isRosterKey(k)).map(([,v])=>v.name);
+  const invited = roster.length;
+  const pct = invited ? Math.round(respondedNames.length/invited*100) : 0;
 
-  const awaitingBlock = `
-    <div class="panel">
-      <h2>Who has responded</h2>
-      <p class="note">Matched to the roster by stable rosterId — re-opening a link edits the same row, never stacks.</p>
-      <div class="tally-labels" style="margin-top:0">Responded: <b style="color:var(--ink)">${respondedNames.length?respondedNames.map(esc).join(", "):"none yet"}</b></div>
-      ${awaiting.length
-        ? `<div class="awaiting">Awaiting: <b>${awaiting.map(esc).join(", ")}</b></div>`
-        : `<div class="awaiting" style="color:var(--work)">Everyone on the invite list has responded.</div>`}
-      ${guests.length
-        ? `<div class="tally-labels" style="margin-top:8px;color:#8a5c06">Guests (not on the invite list): <b>${guests.map(esc).join(", ")}</b></div>`
-        : ``}
-    </div>`;
+  const hero = best
+    ? `<div class="res-hero"><div class="lead-k">★ Leading time</div>
+        <div class="lead-t mono">${best.lp.wd} ${best.lp.hh}:${best.lp.mm} · <span style="font-size:15px;font-weight:500">${best.lp.day} ${best.lp.mon} ${esc(refTz.split("/").pop())}</span></div>
+        <div class="lead-s">${best.y} yes${best.m?` · ${best.m} maybe`:""}${best.n?` · ${best.n} no`:""} — out of ${total} response${total===1?"":"s"}</div></div>`
+    : `<div class="res-hero empty"><div class="lead-k">No responses yet</div>
+        <div class="lead-s">Share your invite links (Poll &amp; invite) to start collecting answers.</div></div>`;
+
+  const progress = invited ? `
+    <div class="res-prog-wrap">
+      <div class="res-prog-lab"><b>${respondedNames.length} of ${invited}</b> invited responded${guests.length?` · <b>${guests.length}</b> guest${guests.length>1?"s":""}`:""}</div>
+      <div class="res-prog"><i style="width:${pct}%"></i></div>
+    </div>` : "";
 
   return `
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
-      <h2><span class="section-num">04 · </span>Live results</h2>
+      <h2><span class="section-num">04 · </span>${esc(poll.title||state.meta.title)} — results</h2>
       <button class="btn ghost" id="refreshResults">Refresh</button>
     </div>
-    <p class="note">Tally from votes.json. "Leading" = most yes-votes (maybe counts half).
-      ${sharedMode?"Auto-refreshes every ~5s while this tab is open.":"Local mode — shows your local optimistic copy."}</p>
-    ${slots.length?resultCards:'<p class="note">No slots.</p>'}
+    ${hero}
+    ${progress}
+    ${slots.length?cards:'<p class="note">No candidate times in this poll.</p>'}
+    <p class="note" style="margin-top:6px">Ranked best-first ("Leading" = most yes; maybe counts half). Bars show Yes/Maybe/No of everyone who's responded.${sharedMode?" Auto-refreshes ~5s.":""}</p>
   </div>
-  ${awaitingBlock}
+  ${awaitingChips(respondedNames, awaiting, guests)}
   ${availabilityAggPanel(poll, votes)}`;
+}
+
+// Shared ranked tally renderer for the organizer Results AND the responder dashboard.
+// displayTz = the zone to show prominently; opts.refTz adds a secondary ref time;
+// opts.mine = {slotId:answer} highlights the viewer's own pick.
+function rankedTally(slots, votes, displayTz, opts){
+  opts = opts || {};
+  const total = Object.keys(votes||{}).length;
+  const rows = [...(slots||[])].map(s=>{
+    let y=0,m=0,n=0;
+    Object.values(votes||{}).forEach(v=>{ const r=v.responses && v.responses[s.id];
+      if(r==="yes")y++; else if(r==="maybe")m++; else if(r==="no")n++; });
+    return { s, y, m, n, resp:y+m+n, score:y*2+m, lp:localParts(new Date(s.utc), displayTz) };
+  });
+  rows.sort((a,b)=> b.score-a.score || b.y-a.y || a.s.utc.localeCompare(b.s.utc));
+  const best = rows.length && rows[0].score>0 ? rows[0] : null;
+  const w = x => total ? (x/total*100) : 0;
+  const cards = rows.map((r,i)=>{
+    const leading = best && r===best;
+    let sub;
+    if(opts.refTz && opts.refTz!==displayTz){
+      const rl = localParts(new Date(r.s.utc), opts.refTz);
+      sub = `${r.lp.day} ${r.lp.mon} · ${rl.hh}:${rl.mm} ${esc(opts.refTz.split("/").pop())}${r.s.label?" · "+esc(r.s.label):""}`;
+    } else {
+      sub = `${r.lp.day} ${r.lp.mon} · ${esc(displayTz.split("/").pop())}${r.s.label?" · "+esc(r.s.label):""}`;
+    }
+    const mine = opts.mine && opts.mine[r.s.id];
+    const mineTag = mine ? `<span class="res-mine ${mine}">your answer: ${mine}</span>` : "";
+    return `<div class="res-card${leading?" leading":""}">
+      <div class="res-top">
+        <span class="res-rank">${i+1}</span>
+        <div class="res-when"><div class="res-time">${r.lp.wd} ${r.lp.hh}:${r.lp.mm}</div><div class="res-sub">${sub}</div></div>
+        ${leading?'<span class="res-badge">★ Leading</span>':""}${mineTag}
+      </div>
+      <div class="res-bar" title="${r.y} yes, ${r.m} maybe, ${r.n} no of ${total}">
+        <div class="seg seg-y" style="width:${w(r.y)}%"></div>
+        <div class="seg seg-m" style="width:${w(r.m)}%"></div>
+        <div class="seg seg-n" style="width:${w(r.n)}%"></div>
+      </div>
+      <div class="res-counts"><span class="cy">${r.y} yes</span><span class="cm">${r.m} maybe</span><span class="cn">${r.n} no</span>${total>r.resp?`<span class="cnone">${total-r.resp} no reply</span>`:""}</div>
+    </div>`;
+  }).join("");
+  return { cards, best, total };
+}
+function awaitingChips(responded, awaiting, guests){
+  if(!responded.length && !awaiting.length && !guests.length) return "";
+  return `<div class="panel">
+    <h2>Who has responded</h2>
+    <div class="chips">
+      ${responded.map(n=>`<span class="chip-r">✓ ${esc(n)}</span>`).join("")}
+      ${awaiting.map(n=>`<span class="chip-a">${esc(n)}</span>`).join("")}
+      ${guests.map(n=>`<span class="chip-g">+ ${esc(n)}</span>`).join("")}
+    </div>
+    <p class="note" style="margin-top:11px"><span style="color:#0a6f60">✓ responded</span> ·
+      <span style="color:var(--muted)">awaiting</span> ·
+      <span style="color:#8a5c06">+ guest (not on the invite list)</span></p>
+  </div>`;
 }
 function lcache(k){ try{ const v=localStorage.getItem("czmc:"+k); return v?JSON.parse(v):null; }catch(e){ return null; } }
 
@@ -2116,30 +2193,15 @@ const Responder = (() => {
 
   // ---- post-submit dashboard: live tally + ability to change the response ----
   function buildDashTally(votes){
-    const slots = [...(poll.slots||[])].sort((a,b)=>a.utc.localeCompare(b.utc));
     const tz = myZoneTz || detectTz();
-    const rows = slots.map(s=>{
-      let y=0,m=0,n=0;
-      Object.values(votes||{}).forEach(v=>{ const r=v.responses?.[s.id]; if(r==="yes")y++; else if(r==="maybe")m++; else if(r==="no")n++; });
-      const myLp=localParts(new Date(s.utc), tz), refLp=localParts(new Date(s.utc), poll.refTz);
-      return { s,y,m,n,myLp,refLp, mine: me.responses?.[s.id]||null, score:y*2+m };
-    });
-    const best = Math.max(...rows.map(r=>r.score), -1);
-    const total = Object.keys(votes||{}).length;
-    const cards = rows.map(r=>{
-      const isBest = r.score===best && r.score>0;
-      const cls = r.mine==='yes'?'work':r.mine==='maybe'?'edge':r.mine==='no'?'off':'';
-      const mineTag = r.mine?`<span class="resp-comfort ${cls}">your answer: ${r.mine}</span>`:'';
-      return `<div class="resp-slot" ${isBest?'style="border-color:var(--accent)"':''}>
-        <div><span class="resp-mytime mono">${r.myLp.wd} ${r.myLp.hh}:${r.myLp.mm}</span>
-          ${isBest?'<span class="best-tag">Leading</span>':''} ${mineTag}</div>
-        <div class="resp-reftime">${r.refLp.wd} ${r.refLp.day} ${r.refLp.mon} · <b class="mono">${r.refLp.hh}:${r.refLp.mm}</b> ${esc(poll.refTz.split("/").pop())}${r.s.label?" · "+esc(r.s.label):""}</div>
-        <div class="tally"><i class="ty" style="flex:${r.y}"></i><i class="tm" style="flex:${r.m}"></i><i class="tn" style="flex:${r.n}"></i><i style="flex:0.001"></i></div>
-        <div class="tally-labels">${r.y} yes · ${r.m} maybe · ${r.n} no</div>
-      </div>`;
-    }).join("");
-    return `<div class="tally-labels" style="margin:0 0 10px">${total} ${total===1?"person has":"people have"} responded so far.</div>
-      ${cards||'<p class="note">No votes yet.</p>'}`;
+    const { cards, best, total } = rankedTally(poll.slots||[], votes, tz, { refTz: poll.refTz, mine: me.responses||{} });
+    const hero = best
+      ? `<div class="res-hero"><div class="lead-k">★ Leading so far</div>
+          <div class="lead-t mono">${best.lp.wd} ${best.lp.hh}:${best.lp.mm} <span style="font-size:13px;font-weight:400;color:#0a6f60">your time</span></div>
+          <div class="lead-s">${best.y} yes${best.m?` · ${best.m} maybe`:""} of ${total} response${total===1?"":"s"}</div></div>`
+      : "";
+    return `<div class="res-prog-lab" style="margin-bottom:10px"><b>${total}</b> ${total===1?"person has":"people have"} responded so far.</div>
+      ${hero}${cards||'<p class="note">No votes yet.</p>'}`;
   }
   async function renderDashboard(){
     rootEl().className = "wrap narrow";
