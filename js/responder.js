@@ -129,9 +129,9 @@ export const Responder = (() => {
     });
     return `
       <div class="panel" id="availPanel">
-        <h2>When ARE you free?</h2>
-        <p class="note">Tap the hours you're free (your local time, ${esc(tz.split("/").pop())}). The organizer
-          uses this to find an alternative time. Empty = busy; <b>✓ green = free</b>.</p>
+        <h2>When are you free this week? <span style="color:var(--off);font-weight:600">(required)</span></h2>
+        <p class="note">Tap every hour you're free (your local time, ${esc(tz.split("/").pop())}) — this is required so
+          the organizer can find a time that works for everyone. Empty = busy; <b>✓ green = free</b>.</p>
         <div class="av-scroll">
           <table class="avgrid">
             <thead><tr>${head}</tr></thead>
@@ -217,10 +217,10 @@ export const Responder = (() => {
       <select id="respZone">${(poll.zones||[]).map(z=>
         `<option value="${z.id}" ${z.id===me.zoneId?"selected":""}>${esc(z.label)}</option>`).join("")}</select>`;
 
-    const wantAvail = showAvail || allNo();
-    const availLink = `
-      <p style="margin-top:14px"><button class="link" id="noneWork">${wantAvail?"Hide weekly availability":"➕ Also share when you're free this week (optional — helps find a better time for everyone)"}</button></p>`;
-    const availHtml = wantAvail ? availabilityGridHtml() : "";
+    // Weekly availability is REQUIRED for everyone (helps find a better time if these
+    // slots don't work). Always shown; validated on save.
+    const availLink = `<p class="note" style="margin-top:14px;color:var(--off)"><b>Required:</b> also mark when you're free this week ⬇</p>`;
+    const availHtml = availabilityGridHtml();
 
     const trustLine = me.viaCentral
       ? `Who can see this: your <b>name</b> and your Yes/Maybe/No answers are committed to a public GitHub branch for this poll. Your <b>email is stored only as a private hash</b> (never the address, never shown). ${sharedMode?"":"(Local preview — nothing is sent anywhere.)"}`
@@ -301,11 +301,6 @@ export const Responder = (() => {
       });
     });
 
-    document.getElementById("noneWork")?.addEventListener("click", ()=>{
-      showAvail = !(showAvail || allNo()); render();
-      document.getElementById("availPanel")?.scrollIntoView({behavior:"smooth",block:"start"});
-    });
-
     function toggleAvail(td){
       const iso=td.dataset.avday, h=parseInt(td.dataset.avh,10);
       me.availability=me.availability||{};
@@ -352,6 +347,12 @@ export const Responder = (() => {
       return;
     }
     if(!Object.keys(me.responses||{}).length){ setState("err","Pick Yes / Maybe / No on at least one option."); return; }
+    const availCount = Object.values(me.availability||{}).reduce((n,a)=>n+(Array.isArray(a)?a.length:0),0);
+    if(!availCount){
+      setState("err","Please mark when you're free this week — it's required. Tap the green hours below.");
+      document.getElementById("availPanel")?.scrollIntoView({behavior:"smooth",block:"center"});
+      return;
+    }
 
     saving=true; setState("", "Saving…"); document.getElementById("saveVote").disabled=true;
 
