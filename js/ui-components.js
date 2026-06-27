@@ -71,12 +71,56 @@ export function render(){
     t.setAttribute("aria-selected", String(t.dataset.view===appState.view)));
 }
 
+let overlapTimer = null;
 function wireOverlap() {
-  document.querySelectorAll(".board th, .board td.cell").forEach(cell => {
-    if(cell.dataset.hr) {
-      cell.addEventListener("click", () => toggleBoardSlot(parseInt(cell.dataset.hr, 10)));
+  if(overlapTimer){ clearInterval(overlapTimer); overlapTimer = null; }
+  const refTz = state.meta.refTz, weekday = state.meta.weekday;
+  const n0 = new Date();
+  const day = nearestWeekdayDate(n0.getUTCFullYear(), n0.getUTCMonth()+1, n0.getUTCDate(), weekday, refTz);
+
+  // LIVE clock — current time in every zone, ticking each second. Self-stops when
+  // the #nowbar leaves the DOM (i.e. when you switch away from the overlap tab).
+  function renderNow(){
+    const nb = document.getElementById("nowbar");
+    if(!nb){ if(overlapTimer){ clearInterval(overlapTimer); overlapTimer=null; } return; }
+    const d = new Date();
+    const zones = state.zones.map(z=>{
+      const o = {}; new Intl.DateTimeFormat("en-GB",{timeZone:z.tz,weekday:"short",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(d).forEach(p=>o[p.type]=p.value);
+      const c = classify((parseInt(o.hour,10)%24)*60 + parseInt(o.minute,10), z);
+      return `<span class="nz ${c}"><b>${esc(z.tz.split("/").pop())}</b> <span class="mono">${o.hour}:${o.minute}:${o.second}</span></span>`;
+    }).join("");
+    nb.innerHTML = `<span class="now-k">● LIVE</span> ${zones}`;
+  }
+  renderNow(); overlapTimer = setInterval(renderNow, 1000);
+
+  // Click an hour column -> show that time across every zone (compare with the live clock).
+  function selectHour(h){
+    const utc = zonedWallToUtc(day.y, day.m, day.d, h, 0, refTz);
+    const chips = state.zones.map(z=>{ const lp=localParts(utc,z.tz); const c=classify(lp.min,z);
+      return `<div class="chip ${c}"><div class="czone">${esc(z.label)}</div>
+        <div class="ctime mono">${lp.wd} ${lp.hh}:${lp.mm}</div><div class="ctag">${CLASS_LABEL[c]}</div></div>`; }).join("");
+    const ro = document.getElementById("slotReadout");
+    if(ro){
+      ro.innerHTML = `<div class="panel">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <h2>Selected · <span class="mono">${String(h).padStart(2,"0")}:00 ${esc(refTz.split("/").pop())}</span></h2>
+          <button class="btn ghost" id="addSelHour">+ Add as candidate slot</button></div>
+        <p class="note">That moment in every zone — compare with the <b>live clock</b> above.</p>
+        <div class="strip">${chips}</div></div>`;
+      document.getElementById("addSelHour")?.addEventListener("click", async ()=>{
+        const iso = utc.toISOString();
+        if(!state.slots.some(s=>Math.abs(Date.parse(s.utc)-Date.parse(iso))<1000)){
+          state.slots.push({ id:"s_"+uid(), utc:iso, label:"" });
+          state.slots.sort((a,b)=>Date.parse(a.utc)-Date.parse(b.utc));
+          await saveSlots();
+        }
+        const b=document.getElementById("addSelHour"); if(b){ b.textContent="✓ Added — see Poll & invite"; b.disabled=true; }
+      });
+      ro.scrollIntoView({behavior:"smooth", block:"nearest"});
     }
-  });
+    document.querySelectorAll(".board [data-hr]").forEach(el=>el.classList.toggle("selected", parseInt(el.dataset.hr,10)===h));
+  }
+  document.querySelectorAll(".board [data-hr]").forEach(el=>el.addEventListener("click", ()=>selectHour(parseInt(el.dataset.hr,10))));
 }
 
 export function toggleBoardSlot(h) {
@@ -120,7 +164,7 @@ export function viewOverlap(){
   }
 
   let head = `<th class="b-zonecol">Zone</th>`;
-  cols.forEach(c => head += `<th data-hr="${c.h}" class="b-hour${c.allOk?" in-work":""}${c.h===currentHourRef?" current-hour":""}" title="Click to toggle slot" style="cursor:pointer">${String(c.h).padStart(2,"0")}</th>`);
+  cols.forEach(c => head += `<th data-hr="${c.h}" class="b-hour${c.allOk?" in-work":""}${c.h===currentHourRef?" current-hour":""}" title="Click to see this time in every zone" style="cursor:pointer">${String(c.h).padStart(2,"0")}</th>`);
 
   let overlapRow = `<td class="b-zonecol" style="border-bottom:none"></td>`;
   cols.forEach(c => overlapRow += `<td class="${c.allWork?"b-mark-work":(c.allOk?"b-mark-edge":"")}"></td>`);
@@ -133,7 +177,7 @@ export function viewOverlap(){
       const cell = c.cells[zi];
       const pin = c.h===pinHour ? " pinned" : "";
       const t = cell.mm==="00" ? cell.hh : `${cell.hh}<span class="mm">:${cell.mm}</span>`;
-      row += `<td data-hr="${c.h}" class="cell ${cell.c}${pin}${c.h===currentHourRef?" current-hour":""}" title="Click to toggle slot" style="cursor:pointer">${t}</td>`;
+      row += `<td data-hr="${c.h}" class="cell ${cell.c}${pin}${c.h===currentHourRef?" current-hour":""}" title="Click to see this time in every zone" style="cursor:pointer">${t}</td>`;
     });
     body += `<tr>${row}</tr>`;
   });
@@ -148,7 +192,9 @@ export function viewOverlap(){
     </div>
     <p class="note">Each cell shows that zone's local hour. Night hours are dimmed so the
       <b style="color:var(--work)">green</b> overlap — where everyone is at work — stands out;
-      <b style="color:var(--edge)">amber (hatched)</b> marks the edge of someone's day.</p>
+      <b style="color:var(--edge)">amber (hatched)</b> marks the edge of someone's day.
+      <b>Click any hour</b> to see that moment in every zone.</p>
+    <div class="nowbar" id="nowbar"></div>
     <div class="board-scroll">
       <table class="board">
         <thead><tr>${head}</tr></thead>
@@ -158,6 +204,7 @@ export function viewOverlap(){
         </tbody>
       </table>
     </div>
+    <div id="slotReadout"></div>
     <div class="pin-flag"><span class="pin-dot"></span>${recTxt}</div>
     <div class="legend">
       <span><i class="sw work"></i> Working hours</span>
