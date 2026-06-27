@@ -16,9 +16,8 @@ async function init(){
     return;
   }
   setAppMode("organizer");
-  organizerShell();
-
   await loadOrganizerState();
+  organizerShell();
 
   if(h.poll && ("admin" in h)){
     app().innerHTML = `<div class="loading">Loading poll ${h.poll}…</div>`;
