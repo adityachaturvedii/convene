@@ -117,6 +117,18 @@
   .chip.work{background:var(--work-bg);border-color:#bfe5dd;} .chip.work .ctag{color:#0a6f60;}
   .chip.edge{background:var(--edge-bg);border-color:#e8d7a8;} .chip.edge .ctag{color:#8a5c06;}
   .chip.off{background:var(--off-bg);border-color:#eecdd4;} .chip.off .ctag{color:#a23a4e;}
+  /* live world-clock bar on the overlap board */
+  .nowbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:14px 0 4px;
+    padding:11px 15px;border-radius:10px;background:var(--ink);color:#fff;}
+  .nowbar .now-k{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.1em;
+    color:#7fe0cf;font-weight:600;}
+  .nowbar .nz{display:inline-flex;align-items:baseline;gap:6px;}
+  .nowbar .nz b{font-weight:500;color:#aeb8be;font-size:11.5px;}
+  .nowbar .nz .mono{font-size:14.5px;letter-spacing:.02em;}
+  .nowbar .nz.work .mono{color:#7fe0cf;} .nowbar .nz.edge .mono{color:#f0c674;} .nowbar .nz.off .mono{color:#e89aa6;}
+  .board .current-hour{outline:2px solid #2f7da6;outline-offset:-2px;}
+  thead .b-hour.current-hour{color:#2f7da6;font-weight:700;}
+  .board td.cell.selected,.board th.b-hour.selected{box-shadow:inset 0 0 0 2px var(--accent);background:var(--accent-bg)!important;color:var(--accent)!important;font-weight:600;}
 
   .warn{display:flex;gap:10px;align-items:flex-start;background:#FBF1E0;
     border:1px solid #E8D7A8;border-radius:8px;padding:12px 14px;margin-top:18px;font-size:13px;line-height:1.5;}
