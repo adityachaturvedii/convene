@@ -26,6 +26,18 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
+<!-- speed up first paint: warm the data host + load all ES modules in parallel
+     instead of the default sequential import waterfall -->
+<link rel="preconnect" href="https://raw.githubusercontent.com" crossorigin />
+<link rel="modulepreload" href="js/main.js" />
+<link rel="modulepreload" href="js/state.js" />
+<link rel="modulepreload" href="js/utils.js" />
+<link rel="modulepreload" href="js/tz-engine.js" />
+<link rel="modulepreload" href="js/github-store.js" />
+<link rel="modulepreload" href="js/ui-components.js" />
+<link rel="modulepreload" href="js/ui-results.js" />
+<link rel="modulepreload" href="js/responder.js" />
+
   <link rel="stylesheet" href="css/style.css">
 
 <main class="wrap" id="root">
