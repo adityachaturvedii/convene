@@ -815,10 +815,12 @@ function organizerShell(){
 function renderModebar(){
   const el = document.getElementById("modebar");
   if(!el) return;
-  el.className = "modebar " + (sharedMode ? "shared" : "local");
-  el.innerHTML = sharedMode
-    ? `<span class="dot"></span>Shared mode — votes are collected via GitHub for ${esc(GH.owner)}/${esc(GH.repo)}.`
-    : `<span class="dot"></span>Local mode — deploy to GitHub to collect votes from others.`;
+  // On the live (shared) site the mode banner is just noise — only show the
+  // hint in local/dev mode.
+  if(sharedMode){ el.style.display="none"; el.innerHTML=""; el.className="modebar"; return; }
+  el.style.display="";
+  el.className = "modebar local";
+  el.innerHTML = `<span class="dot"></span>Local mode — deploy to GitHub to collect votes from others.`;
 }
 const app = () => document.getElementById("app");
 
@@ -1143,11 +1145,16 @@ async function publishPoll(){
   const pollId = state.pollId || ("p"+randomToken(8));
   state.pollId = pollId;
 
-  // mint per-invitee token + tokenHash (Web Crypto SHA-256)
+  // mint per-invitee token + tokenHash (Web Crypto SHA-256).
+  // On RE-PUBLISH, reuse each person's existing token so invite links already
+  // sent stay valid — only mint a fresh token for newly-added invitees.
+  const existingTok = {};
+  if(state.invites && Array.isArray(state.invites.links))
+    for(const lk of state.invites.links) existingTok[lk.rosterId] = lk.token;
   const rosterOut = [];           // goes into poll.json — NO email, NO raw token
   const links = [];               // organizer-only invite links (memory + local)
   for(const r of named){
-    const token = randomToken(22);
+    const token = existingTok[r.id] || randomToken(22);
     const tokenHash = await sha256Hex(token);
     rosterOut.push({ rosterId:r.id, name:r.name.trim(), zoneId:r.zoneId, tokenHash });
     const url = `${pagesBase}#poll=${encodeURIComponent(pollId)}&who=${encodeURIComponent(r.id)}&t=${encodeURIComponent(token)}`;
@@ -1181,6 +1188,36 @@ async function publishPoll(){
       : "Generated locally (local mode — not sent to GitHub).";
   }
   render();
+}
+
+// If we hold a poll locally (id + invites) but it never reached GitHub — e.g. it
+// was created before sharedMode worked — push it live automatically, reusing the
+// SAME per-invitee tokens so already-sent links keep working. Idempotent: it only
+// commits when the poll is definitively absent from the server.
+async function ensurePollLive(){
+  if(!sharedMode || !state.pollId || !state.invites || !Array.isArray(state.invites.links)) return;
+  let onServer = null;
+  try{ onServer = await GHIO.readJson(GHIO.pollJsonPath(state.pollId)); }
+  catch(e){ return; }                    // transient read error: don't risk a needless write
+  if(onServer) return;                   // already live
+  const named = state.roster.filter(r=>(r.name||"").trim());
+  const tokById = {};
+  for(const lk of state.invites.links) tokById[lk.rosterId] = lk.token;
+  const rosterOut = [];
+  for(const r of named){
+    const token = tokById[r.id]; if(!token) continue;     // only re-push known invitees
+    rosterOut.push({ rosterId:r.id, name:r.name.trim(), zoneId:r.zoneId, tokenHash: await sha256Hex(token) });
+  }
+  if(!rosterOut.length || !state.slots.length) return;
+  const poll = {
+    id: state.pollId, title: state.meta.title,
+    meetingDateISO: state.slots.map(s=>s.utc).sort()[0],
+    refTz: state.meta.refTz, weekday: state.meta.weekday, duration: state.meta.duration,
+    zones: state.zones.map(z=>({id:z.id,label:z.label,tz:z.tz,ws:z.ws,we:z.we})),
+    roster: rosterOut,
+    slots: state.slots.map(s=>({id:s.id,utc:s.utc,label:s.label||""}))
+  };
+  try{ await Store.savePoll(poll); }catch(e){}
 }
 
 async function deleteCurrentPoll(){
@@ -1388,13 +1425,11 @@ function viewSetup(){
     <div style="margin-top:12px"><button class="btn ghost" id="addZone">+ Add zone</button></div>
   </div>
 
-  <div class="panel">
+  ${sharedMode ? "" : `<div class="panel">
     <h2>Data &amp; mode</h2>
-    <p class="storage-note">${sharedMode
-      ? `Shared mode for <b>${esc(GH.owner)}/${esc(GH.repo)}</b>. Organizer setup + invitee emails live in this browser's localStorage only. Published polls and votes live on the <b>poll-data</b> branch (poll.json + votes.json) and are publicly readable. The Store adapter at the top of the file is the single persistence swap point.`
-      : `Local mode — no GitHub token injected, so nothing leaves this browser. Everything is stored in localStorage. Deploy to GitHub (inject the dispatch token) to collect votes from others.`}</p>
+    <p class="storage-note">Local mode — no GitHub token injected, so nothing leaves this browser. Everything is stored in localStorage. Deploy to GitHub (inject the dispatch token) to collect votes from others.</p>
     <div style="margin-top:12px"><button class="btn danger" id="resetAll">Reset local setup data</button></div>
-  </div>`;
+  </div>`}`;
 }
 
 function wireSetup(){
@@ -1916,6 +1951,7 @@ const Responder = (() => {
       await loadOrganizerState();
       organizerShell();
       render();
+      ensurePollLive();   // push a locally-created-but-not-yet-committed poll live
     }
   }catch(err){
     console.error(err);
