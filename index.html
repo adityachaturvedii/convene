@@ -1405,69 +1405,84 @@ async function deleteCurrentPoll(){
    For every voter entry that carries `availability`, convert each free LOCAL
    hour into the poll's REFERENCE zone and tally how many people are free at
    each ref-zone hour per day. Render a readable heat strip + best hour/day. */
-function availabilityAggPanel(poll, votes){
+// Convergence: from EVERY respondent who shared weekly availability (any answer),
+// convert each free local hour to the reference zone, rank the times where the most
+// people are free, and surface them as concrete meeting suggestions (+ per-zone times).
+function convergencePanel(poll, votes, opts){
+  opts = opts || {};
   const refTz = poll.refTz;
-  // collect (tz, availability-map) for every respondent who submitted one
+  const pad = n => String(n).padStart(2,"0");
   const contributors = Object.values(votes||{})
     .filter(v => v && v.availability && Object.keys(v.availability).length)
     .map(v => ({ tz: v.tz || refTz, avail: v.availability }));
-  if(!contributors.length) return "";
+  if(!contributors.length){
+    if(opts.responder) return "";
+    return `<div class="panel"><h2>Best converging times</h2>
+      <p class="note">No one has shared their weekly availability yet. As responders add the hours they're
+      free (with any answer — Yes, Maybe or No), the best meeting windows appear here automatically.</p></div>`;
+  }
+  const M = contributors.length;
 
-  // gather the union of ref-zone day ISOs present across respondents
-  const dayCount = {};   // refDateISO -> { [refHour]: count }
-  const dayMeta = {};    // refDateISO -> {y,m,d}
+  const dayCount = {}, dayMeta = {};
   contributors.forEach(c=>{
     Object.entries(c.avail).forEach(([dISO, hours])=>{
-      const [Y,M,D] = dISO.split("-").map(Number);
+      const [Y,Mo,D] = dISO.split("-").map(Number);
       (hours||[]).forEach(h=>{
-        // local free hour -> UTC instant -> ref-zone hour (approx near DST/date edges)
-        const utc = zonedWallToUtc(Y, M, D, h, 0, c.tz);
+        const utc = zonedWallToUtc(Y, Mo, D, h, 0, c.tz);     // free local hour -> UTC
         const rp = localPartsFull(utc, refTz);
-        const refHour = localParts(utc, refTz).hh;            // "07".."23"
-        const refDISO = `${rp.y}-${String(rp.m).padStart(2,"0")}-${String(rp.d).padStart(2,"0")}`;
-        dayCount[refDISO] = dayCount[refDISO] || {};
-        const hk = parseInt(refHour,10);
-        dayCount[refDISO][hk] = (dayCount[refDISO][hk]||0) + 1;
-        dayMeta[refDISO] = { y:rp.y, m:rp.m, d:rp.d };
+        const refHour = parseInt(localParts(utc, refTz).hh, 10);
+        const key = `${rp.y}-${pad(rp.m)}-${pad(rp.d)}`;
+        dayCount[key] = dayCount[key] || {};
+        dayCount[key][refHour] = (dayCount[key][refHour]||0) + 1;
+        dayMeta[key] = { y:rp.y, m:rp.m, d:rp.d };
       });
     });
   });
 
-  const H0=7, H1=20;   // display window 07..20 ref-zone
-  const dayISOs = Object.keys(dayCount).sort();
-  if(!dayISOs.length) return "";
-
-  const rows = dayISOs.map(dISO=>{
-    const meta = dayMeta[dISO];
-    const noon = zonedWallToUtc(meta.y, meta.m, meta.d, 12, 0, refTz);
-    const lp = localParts(noon, refTz);
-    const counts = dayCount[dISO];
-    const maxC = Math.max(0, ...Object.values(counts));
-    let strip = "";
-    for(let h=H0; h<=H1; h++){
-      const c = counts[h]||0;
-      const best = c>0 && c===maxC;
-      strip += `<div class="cellh${best?' best':''}" title="${String(h).padStart(2,"0")}:00 — ${c} free">${c||""}</div>`;
-    }
-    const bestHours = [];
-    if(maxC>0) for(let h=H0; h<=H1; h++) if((counts[h]||0)===maxC) bestHours.push(String(h).padStart(2,"0")+":00");
-    return `
-      <div class="av-row">
-        <span class="av-dlabel">${lp.wd} ${lp.day} ${lp.mon}</span>
-        <div class="heat">${strip}</div>
-        ${bestHours.length?`<span class="av-besttag">best: ${bestHours.join(", ")} (${maxC})</span>`:''}
-      </div>`;
+  // ranked suggestions (most-free first)
+  const flat = [];
+  Object.entries(dayCount).forEach(([dISO, hours])=>
+    Object.entries(hours).forEach(([h,c])=> flat.push({ dISO, h:+h, c, meta:dayMeta[dISO] })));
+  flat.sort((a,b)=> b.c-a.c || a.dISO.localeCompare(b.dISO) || a.h-b.h);
+  const top = flat.filter(x=>x.c>0).slice(0, opts.responder?4:6);
+  const maxC = top.length ? top[0].c : 0;
+  const zonesMulti = (poll.zones||[]).length>1;
+  const suggestions = top.map((x,i)=>{
+    const utc = zonedWallToUtc(x.meta.y, x.meta.m, x.meta.d, x.h, 0, refTz);
+    const lp = localParts(utc, refTz);
+    const isBest = x.c===maxC;
+    const zmini = zonesMulti ? (poll.zones||[]).map(z=>{ const zl=localParts(utc,z.tz);
+      return `${esc(z.tz.split("/").pop())} <b class="mono">${zl.hh}:${zl.mm}</b>`; }).join(" · ") : "";
+    return `<div class="res-card${isBest?" leading":""}">
+      <div class="res-top"><span class="res-rank">${i+1}</span>
+        <div class="res-when"><div class="res-time">${lp.wd} ${pad(x.h)}:00</div>
+          <div class="res-sub">${lp.day} ${lp.mon} · ${esc(refTz.split("/").pop())}</div></div>
+        <span class="res-badge" ${isBest?'':'style="background:var(--muted)"'}>${x.c} of ${M} free</span></div>
+      ${zmini?`<div class="res-sub" style="margin-top:5px">${zmini}</div>`:""}
+    </div>`;
   }).join("");
 
-  return `
-    <div class="panel">
-      <h2>When the “No” voters are free</h2>
-      <p class="note">Aggregated from respondents who shared their weekly availability. Columns are hours
-        ${String(H0).padStart(2,"0")}:00–${String(H1).padStart(2,"0")}:00 in <b>${esc(refTz.split("/").pop())}</b>;
-        each number is how many people are free then. The outlined cell is the best hour that day.
-        Conversion from each person's zone is approximate around date boundaries.</p>
-      ${rows}
-    </div>`;
+  // detail heatmap (organizer only, collapsed)
+  const H0=7, H1=20;
+  const heatRows = Object.keys(dayCount).sort().map(dISO=>{
+    const meta = dayMeta[dISO];
+    const lp = localParts(zonedWallToUtc(meta.y, meta.m, meta.d, 12, 0, refTz), refTz);
+    const counts = dayCount[dISO];
+    const maxD = Math.max(0, ...Object.values(counts));
+    let strip = "";
+    for(let h=H0; h<=H1; h++){ const c=counts[h]||0;
+      strip += `<div class="cellh${c>0&&c===maxD?' best':''}" title="${pad(h)}:00 — ${c} free">${c||""}</div>`; }
+    return `<div class="av-row"><span class="av-dlabel">${lp.wd} ${lp.day} ${lp.mon}</span><div class="heat">${strip}</div></div>`;
+  }).join("");
+
+  return `<div class="panel">
+    <h2>${opts.responder?"Where everyone converges":"★ Best converging times"}</h2>
+    <p class="note">From <b>${M}</b> ${M===1?"person":"people"} who shared weekly availability. Ranked by how many
+      are free, in <b>${esc(refTz.split("/").pop())}</b>${zonesMulti?" (each zone shown under the time)":""}.
+      Approximate around date boundaries.</p>
+    ${suggestions||'<p class="note">No overlapping free time yet.</p>'}
+    ${opts.responder ? "" : `<details style="margin-top:14px"><summary class="note" style="cursor:pointer;display:inline-block">Full weekly heatmap (${pad(H0)}:00–${pad(H1)}:00 ${esc(refTz.split("/").pop())})</summary><div style="margin-top:10px">${heatRows}</div></details>`}
+  </div>`;
 }
 
 /* ---- Results (organizer reads votes.json) --------------------------- */
@@ -1537,7 +1552,7 @@ function viewResults(){
     <p class="note" style="margin-top:6px">Ranked best-first ("Leading" = most yes; maybe counts half). Bars show Yes/Maybe/No of everyone who's responded.${sharedMode?" Auto-refreshes ~5s.":""}</p>
   </div>
   ${awaitingChips(respondedNames, awaiting, guests)}
-  ${availabilityAggPanel(poll, votes)}`;
+  ${convergencePanel(poll, votes)}`;
 }
 
 // Shared ranked tally renderer for the organizer Results AND the responder dashboard.
@@ -1981,7 +1996,7 @@ const Responder = (() => {
     // everything, or clicked the always-present "None of these work" link.
     const wantAvail = showAvail || allNo();
     const availLink = `
-      <p style="margin-top:14px"><button class="link" id="noneWork">None of these work — share when you ARE free</button></p>`;
+      <p style="margin-top:14px"><button class="link" id="noneWork">${wantAvail?"Hide weekly availability":"➕ Also share when you're free this week (optional — helps find a better time for everyone)"}</button></p>`;
     const availHtml = wantAvail ? availabilityGridHtml() : "";
 
     // privacy/trust line — accurate for both token and central voters.
@@ -2076,9 +2091,9 @@ const Responder = (() => {
       });
     });
 
-    // CHANGE 3 — "None of these work" reveals the weekly availability grid.
+    // weekly availability grid — optional for everyone (Yes/Maybe/No), toggles open/closed.
     document.getElementById("noneWork")?.addEventListener("click", ()=>{
-      showAvail=true; render();
+      showAvail = !(showAvail || allNo()); render();
       document.getElementById("availPanel")?.scrollIntoView({behavior:"smooth",block:"start"});
     });
 
@@ -2225,6 +2240,7 @@ const Responder = (() => {
         <p class="note">"Leading" = most yes-votes (maybe counts half). Times in your zone, then ${esc(poll.refTz.split("/").pop())}.${sharedMode?" Auto-updates every ~10s.":""}</p>
         <div id="dashResults"><p class="note">Loading results…</p></div>
       </div>
+      <div id="dashConverge"></div>
       <div class="panel">
         <button class="btn ghost" id="changeMine" style="width:100%">← Change my response</button>
       </div>`;
@@ -2241,6 +2257,8 @@ const Responder = (() => {
     try{ votes = await Store.loadVotes(pollId) || {}; }catch(e){ votes = lcache("votes:"+pollId) || {}; }
     const cont=document.getElementById("dashResults");
     if(cont) cont.innerHTML = buildDashTally(votes);
+    const conv=document.getElementById("dashConverge");
+    if(conv) conv.innerHTML = convergencePanel(poll, votes, {responder:true});
   }
   function startDashPolling(){
     if(dashTimer) clearInterval(dashTimer);
