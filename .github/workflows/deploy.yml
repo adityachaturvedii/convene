@@ -72,6 +72,25 @@ jobs:
           GH_REPO: ${{ github.event.repository.name }}
           POLL_DISPATCH_TOKEN: ${{ secrets.POLL_DISPATCH_TOKEN }}
 
+      - name: Minify assets (best-effort; per-file, preserves module structure)
+        run: |
+          set -uo pipefail
+          ES="npx --yes esbuild@0.21.5"
+          before=$(cat _site/js/*.js _site/css/style.css | wc -c)
+          # Minify each ES module IN PLACE — keeps imports/exports + modulepreload
+          # valid and behaviour identical; only strips whitespace/shortens locals.
+          for f in _site/js/*.js; do
+            cp "$f" "$f.bak"
+            if $ES "$f.bak" --minify --legal-comments=none --target=es2019 --outfile="$f"; then :; else
+              echo "minify failed for $f — keeping original"; cp "$f.bak" "$f"; fi
+            rm -f "$f.bak"
+          done
+          cp _site/css/style.css _site/css/style.css.bak
+          $ES _site/css/style.css.bak --minify --outfile=_site/css/style.css || cp _site/css/style.css.bak _site/css/style.css
+          rm -f _site/css/style.css.bak
+          after=$(cat _site/js/*.js _site/css/style.css | wc -c)
+          echo "assets minified: ${before} -> ${after} bytes"
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
