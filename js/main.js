@@ -37,3 +37,7 @@ if (document.readyState === "loading") {
 } else {
   init();
 }
+
+// Re-route when the hash changes (e.g. clicking a "View results" #poll=…&admin
+// link, or pasting an invite link). Without this, hash links silently do nothing.
+window.addEventListener("hashchange", () => location.reload());
