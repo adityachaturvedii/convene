@@ -23,7 +23,7 @@ export const DEFAULTS = {
 export const COMMON_TZS = ["Europe/Berlin","Europe/Budapest","Australia/Melbourne","Australia/Sydney",
   "Asia/Kolkata","Asia/Tokyo","Asia/Shanghai","Europe/London","America/New_York","America/Los_Angeles","UTC"];
 
-export let state = { meta:null, zones:[], roster:[], slots:[], votes:{}, pollId:null, organizer:"", invites:null };
+export let state = { meta:{...DEFAULTS.meta}, zones:DEFAULTS.zones.map(z=>({...z})), roster:DEFAULTS.roster.map(r=>({...r})), slots:[], votes:{}, pollId:null, organizer:"", invites:null };
 export let appState = { view: "overlap", appMode: "organizer", convergeAllOnly: false };
 
 export function setView(v) { appState.view = v; }

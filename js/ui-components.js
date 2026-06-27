@@ -12,12 +12,13 @@ export function rootEl(){ return document.getElementById("root"); }
 export const app = () => document.getElementById("app");
 
 export function organizerShell(){
+  const meta = state.meta || { title: "Cross-zone team sync" };
   rootEl().className = "wrap";
   rootEl().innerHTML = `
   <header class="masthead">
     <div>
       <p class="eyebrow" id="eyebrow">Convene · cross-zone scheduling</p>
-      <h1 id="title">${esc(state.meta.title)}</h1>
+      <h1 id="title">${esc(meta.title)}</h1>
       <p class="sub" id="subline">Find the least-cruel common slot. Working hours are shaded per zone; the overlap is where everyone is awake and at work.</p>
     </div>
     <div class="gap-readout">
