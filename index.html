@@ -733,6 +733,22 @@ function seedSlots(){
     utc: zonedWallToUtc(base.y,base.m,base.d,h,m,refTz).toISOString(), label:lbl });
   return [ mk(9,0,"Inside overlap"), mk(11,0,"Current proposal"), mk(8,30,"Early CEST") ];
 }
+// Load a poll's data straight from GitHub into state so its results render on ANY
+// device (no localStorage needed). Used by the admin/results link (#poll=<id>&admin).
+async function adoptRemotePoll(pollId){
+  state.pollId = pollId;
+  const poll = await Store.loadPoll(pollId);   // remote-first (keyless); caches "poll:"+id locally
+  if(poll){
+    state.meta = { ...state.meta,
+      title: poll.title || state.meta.title,
+      refTz: poll.refTz || state.meta.refTz,
+      weekday: (poll.weekday!=null ? poll.weekday : state.meta.weekday),
+      duration: poll.duration || state.meta.duration };
+    if(Array.isArray(poll.zones) && poll.zones.length) state.zones = poll.zones.map(z=>({...z}));
+    if(Array.isArray(poll.slots)) state.slots = poll.slots.map(s=>({...s}));
+  }
+  state.votes = await Store.loadVotes(pollId) || {};
+}
 async function saveMeta(){ await Store.set("meta", state.meta); }
 async function saveZones(){ await Store.set("zones", state.zones); }
 async function saveRoster(){ await Store.set("roster", state.roster); }
@@ -780,7 +796,7 @@ function computeRecommendation(weekday){
 function parseHash(){
   const h = location.hash.replace(/^#/, "");
   const p = new URLSearchParams(h);
-  return { poll:p.get("poll"), who:p.get("who"), t:p.get("t") };
+  return { poll:p.get("poll"), who:p.get("who"), t:p.get("t"), admin:p.has("admin") };
 }
 
 /* ====================================================================
@@ -1068,12 +1084,21 @@ function renderInvitePanel(){
       <span class="lnk" title="${esc(centralUrl)}">${esc(centralUrl)}</span>
       <button class="btn ghost" data-copyone="${esc(centralUrl)}" id="copyCentral">Copy central link</button>
     </div>`;
+  // YOUR results link — opens the live tally on ANY device (no localStorage needed).
+  const adminUrl = `${pagesBase}#poll=${encodeURIComponent(inv.pollId)}&admin`;
+  const adminRow = `
+    <div class="invite-row" style="border-color:var(--work);background:var(--work-bg)">
+      <span class="who">Results (you — any device)</span>
+      <span class="lnk" title="${esc(adminUrl)}">${esc(adminUrl)}</span>
+      <button class="btn ghost" data-copyone="${esc(adminUrl)}">Copy results link</button>
+    </div>`;
   return `
   <div class="invite-list">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
       <span class="pill">poll ${esc(inv.pollId)}</span>
       <button class="btn ghost" id="copyAll">Copy all invite links</button>
     </div>
+    ${adminRow}
     ${centralRow}
     ${rows}
     <p class="storage-note" style="margin-top:8px">Each per-person link contains a one-time private token. Anyone with a
@@ -1308,7 +1333,10 @@ function availabilityAggPanel(poll, votes){
 function viewResults(){
   if(!state.pollId){
     return `<div class="panel"><h2><span class="section-num">04 · </span>Results</h2>
-      <p class="note">No published poll yet. Create one in the “Poll &amp; invite” tab to start collecting votes.</p></div>`;
+      <p class="note">No poll on <b>this device</b>. The poll &amp; its votes live on GitHub, but each device
+      needs the poll's link to find them. If you already published a poll (on this or another device), open its
+      <b>“Results (you — any device)”</b> link from the “Poll &amp; invite” tab — it shows the live tally anywhere.
+      Or create a new poll in “Poll &amp; invite”.</p></div>`;
   }
   const poll = lcache("poll:"+state.pollId) || {
     slots: state.slots, roster: state.roster.filter(r=>(r.name||"").trim())
@@ -1947,9 +1975,16 @@ const Responder = (() => {
 (async function init(){
   try{
     const h = parseHash();
-    if(h.poll){
+    if(h.poll && !h.admin){
       // RESPONDER MODE
       await Responder.start(h);
+    } else if(h.poll && h.admin){
+      // ADMIN/RESULTS MODE — view a poll's live results from ANY device.
+      // No localStorage dependency: poll + votes load straight from GitHub.
+      await loadOrganizerState();
+      await adoptRemotePoll(h.poll);
+      organizerShell();
+      setView("results");
     } else {
       // ORGANIZER MODE
       await loadOrganizerState();
