@@ -80,31 +80,25 @@ export const Responder = (() => {
   function availabilityDays(){
     const refTz = poll.refTz;
     const slots = (poll.slots||[]);
-    if(!slots.length) return [];
-    const earliest = slots.map(s=>s.utc).sort()[0] || poll.meetingDateISO;
+    const earliest = (slots.map(s=>s.utc).sort()[0]) || poll.meetingDateISO;
     if(!earliest) return [];
-    const md = new Date(earliest);
-    const lp = localPartsFull(md, refTz);
-    const meetWd = refWeekday(lp.y, lp.m, lp.d, refTz);
-    const backToMon = (meetWd === 0) ? 6 : (meetWd - 1);
+    // Start at the proposed meeting date and collect the next 8 WORKING days
+    // (Mon–Fri in the reference zone; Saturdays & Sundays skipped).
+    const lp = localPartsFull(new Date(earliest), refTz);
     const days = [];
-    const pushWeek = (startY,startM,startD)=>{
-      for(let i=0;i<7;i++){
-        const dt = new Date(Date.UTC(startY, startM-1, startD+i));
-        const y=dt.getUTCFullYear(), m=dt.getUTCMonth()+1, d=dt.getUTCDate();
-        const iso = `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-        days.push({ iso, y, m, d });
-      }
-    };
-    pushWeek(lp.y, lp.m, lp.d - backToMon);
-    if(meetWd === 4 || meetWd === 5){
-      pushWeek(lp.y, lp.m, lp.d - backToMon + 7);
-    }
-    return days.map(day=>{
-      const noonUtc = zonedWallToUtc(day.y, day.m, day.d, 12, 0, refTz);
+    for(let offset=0; days.length<8 && offset<40; offset++){
+      const dt = new Date(Date.UTC(lp.y, lp.m-1, lp.d + offset));
+      const y=dt.getUTCFullYear(), m=dt.getUTCMonth()+1, d=dt.getUTCDate();
+      const wd = refWeekday(y, m, d, refTz);          // 0=Sun … 6=Sat
+      if(wd === 0 || wd === 6) continue;              // skip weekends
+      const noonUtc = zonedWallToUtc(y, m, d, 12, 0, refTz);
       const dlp = localParts(noonUtc, refTz);
-      return { ...day, label:`${dlp.wd} ${dlp.day} ${dlp.mon}` };
-    });
+      days.push({
+        iso: `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`,
+        y, m, d, label:`${dlp.wd} ${dlp.day} ${dlp.mon}`
+      });
+    }
+    return days;
   }
 
   const AVAIL_H_START = 7, AVAIL_H_END = 20;
@@ -132,6 +126,7 @@ export const Responder = (() => {
         <h2>When are you free this week? <span style="color:var(--off);font-weight:600">(required)</span></h2>
         <p class="note">Tap every hour you're free (your local time, ${esc(tz.split("/").pop())}) — this is required so
           the organizer can find a time that works for everyone. Empty = busy; <b>✓ green = free</b>.</p>
+        <p class="av-scrollhint">↔ Scroll the grid sideways to see every hour.</p>
         <div class="av-scroll">
           <table class="avgrid">
             <thead><tr>${head}</tr></thead>
