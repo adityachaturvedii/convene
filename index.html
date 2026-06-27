@@ -47,7 +47,7 @@
    branch). The token is still named dispatchToken for config compatibility,
    but it now authenticates Contents-API commits, not repository_dispatch.
    ==================================================================== */
-const GH = {
+window.GH = {
   owner: "adityachaturvedii",       // baked in; deploy re-injects the same value
   repo: "convene",
   dataBranch: "poll-data",
