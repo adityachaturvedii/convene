@@ -34,11 +34,7 @@ is timezone-aware and costs nothing.
 
 ## How it saves data (in one breath)
 
-Your browser does not write files directly. When someone votes, the page sends a small message
-("repository_dispatch") to GitHub. A GitHub Action receives it, validates it, and commits the vote
-as JSON to a separate branch called **`poll-data`** (this branch is the database). The page then
-reads that JSON straight back from GitHub's public file server. Saved data shows up on screen
-within roughly **15–30 seconds**.
+Your browser does not write files directly. When someone votes, the page commits the vote directly to a separate `poll-data` branch using the GitHub Contents API. The page then reads that JSON straight back from GitHub. Saved data shows up on screen instantly (~1-2 seconds) — there is zero backend latency, and no waiting for CI runners.
 
 ---
 
