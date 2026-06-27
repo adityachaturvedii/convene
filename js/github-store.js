@@ -58,8 +58,14 @@ export const GHIO = {
   },
 
   async readJson(path){
-    if(sharedMode){ try{ return (await this.ghGetFile(path)).json; }catch(e){ /* fall back */ } }
-    return this.rawGetJson(path);
+    // Prefer the keyless CDN read: much faster than the authenticated API, no rate
+    // limit, and the ?cb cache-bust keeps it fresh. Fall back to the authenticated
+    // Contents API only if the CDN read throws (a 404 returns null = "not found").
+    try{ return await this.rawGetJson(path); }
+    catch(e){
+      if(sharedMode){ try{ return (await this.ghGetFile(path)).json; }catch(e2){} }
+      return null;
+    }
   },
 
   async ghPutFile(path, obj, sha, message){
