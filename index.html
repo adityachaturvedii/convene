@@ -1286,7 +1286,11 @@ async function ensurePollLive(){
   let onServer = null;
   try{ onServer = await GHIO.readJson(GHIO.pollJsonPath(state.pollId)); }
   catch(e){ return; }                    // transient read error: don't risk a needless write
-  if(onServer) return;                   // already live
+  if(onServer){
+    // already live — just make sure it's listed in "My polls" for this organizer key
+    try{ await indexMyPoll(state.pollId, onServer.title||state.meta.title, onServer.meetingDateISO); }catch(e){}
+    return;
+  }
   const named = state.roster.filter(r=>(r.name||"").trim());
   const tokById = {};
   for(const lk of state.invites.links) tokById[lk.rosterId] = lk.token;
