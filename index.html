@@ -443,6 +443,38 @@ const GHIO = {
     throw lastErr || new Error("upsertVoter: exhausted retries");
   },
 
+  // organizer poll index: owners/<sha256(orgKey)>.json = { polls:{ <id>:{title,meetingDateISO,updatedAt} } }
+  // lets a publisher list THEIR polls from any device (no accounts).
+  async upsertOwnerIndex(ownerHash, pollId, meta){
+    const path = this.ownerIndexPath(ownerHash);
+    let lastErr=null;
+    for(let attempt=0; attempt<6; attempt++){
+      try{
+        const { json, sha } = await this.ghGetFile(path);
+        const idx = json && typeof json==="object" ? { ...json } : {};
+        idx.polls = idx.polls && typeof idx.polls==="object" ? { ...idx.polls } : {};
+        idx.polls[pollId] = meta;
+        await this.ghPutFile(path, idx, sha, "index poll "+pollId);
+        return idx;
+      }catch(e){ lastErr=e; if(e&&e.conflict) continue; throw e; }
+    }
+    throw lastErr || new Error("upsertOwnerIndex: exhausted retries");
+  },
+  async removeFromOwnerIndex(ownerHash, pollId){
+    const path = this.ownerIndexPath(ownerHash);
+    for(let attempt=0; attempt<6; attempt++){
+      try{
+        const { json, sha } = await this.ghGetFile(path);
+        if(!json || !json.polls || !(pollId in json.polls)) return;
+        const idx = { ...json, polls: { ...json.polls } };
+        delete idx.polls[pollId];
+        await this.ghPutFile(path, idx, sha, "unindex poll "+pollId);
+        return;
+      }catch(e){ if(e&&e.conflict) continue; return; }
+    }
+  },
+
+  ownerIndexPath: h => `owners/${h}.json`,
   pollJsonPath:  pid => `polls/${pid}/poll.json`,
   votesJsonPath: pid => `polls/${pid}/votes.json`
 };
@@ -718,6 +750,7 @@ async function loadOrganizerState(){
   state.slots  = await Store.get("slots");
   if(!state.slots){ state.slots = seedSlots(); await Store.set("slots", state.slots); }
   state.organizer = await Store.get("organizer") || "";
+  state.orgKey    = await Store.get("orgKey") || null;
   state.pollId    = await Store.get("currentPollId") || null;
   state.invites   = await Store.get("invites:"+(state.pollId||"")) || null;
   // load votes for the current poll if any
@@ -733,6 +766,25 @@ function seedSlots(){
     utc: zonedWallToUtc(base.y,base.m,base.d,h,m,refTz).toISOString(), label:lbl });
   return [ mk(9,0,"Inside overlap"), mk(11,0,"Current proposal"), mk(8,30,"Early CEST") ];
 }
+// Organizer key — a personal code that ties polls to YOU across devices (no accounts).
+async function ensureOrgKey(){
+  let k = await Store.get("orgKey");
+  if(!k){ k = "k"+randomToken(14); await Store.set("orgKey", k); }
+  return k;
+}
+const orgKeyHash = k => sha256Hex(String(k||"").trim());
+// Index a poll under the organizer's key so it shows up in "My polls" anywhere.
+async function indexMyPoll(pollId, title, meetingDateISO){
+  if(!sharedMode) return null;
+  try{
+    const k = await ensureOrgKey();
+    await GHIO.upsertOwnerIndex(await orgKeyHash(k), pollId,
+      { title, meetingDateISO, updatedAt: new Date().toISOString() });
+    state.orgKey = k;
+    return k;
+  }catch(e){ return null; }
+}
+
 // Load a poll's data straight from GitHub into state so its results render on ANY
 // device (no localStorage needed). Used by the admin/results link (#poll=<id>&admin).
 async function adoptRemotePoll(pollId){
@@ -1101,6 +1153,10 @@ function renderInvitePanel(){
     ${adminRow}
     ${centralRow}
     ${rows}
+    ${state.orgKey ? `<p class="storage-note" style="margin-top:8px"><b>Your organizer key:</b>
+      <span class="mono" style="background:var(--work-bg);padding:1px 6px;border-radius:4px">${esc(state.orgKey)}</span>
+      <button class="btn ghost" data-copyone="${esc(state.orgKey)}" style="padding:3px 9px;font-size:11px">Copy</button>
+      — enter it under <b>Results → My polls</b> on any device to see all your polls. Keep it private.</p>` : ``}
     <p class="storage-note" style="margin-top:8px">Each per-person link contains a one-time private token. Anyone with a
       person's link can answer as that person, so send those individually. The <b>central link</b> is safe to forward
       to anyone — it asks each responder for their name + email (the email is stored only as a private hash, never shown).</p>
@@ -1209,6 +1265,8 @@ async function publishPoll(){
   state.invites = { pollId, links, centralUrl };
   await Store.set("currentPollId", pollId);
   await Store.set("invites:"+pollId, state.invites);
+  // index this poll under the organizer's key so it's visible in "My polls" anywhere
+  await indexMyPoll(pollId, poll.title, poll.meetingDateISO);
 
   if(stateEl){
     stateEl.textContent = sharedMode
@@ -1246,7 +1304,7 @@ async function ensurePollLive(){
     roster: rosterOut,
     slots: state.slots.map(s=>({id:s.id,utc:s.utc,label:s.label||""}))
   };
-  try{ await Store.savePoll(poll); }catch(e){}
+  try{ await Store.savePoll(poll); await indexMyPoll(poll.id, poll.title, poll.meetingDateISO); }catch(e){}
 }
 
 async function deleteCurrentPoll(){
@@ -1254,6 +1312,7 @@ async function deleteCurrentPoll(){
   if(!confirm("Delete this poll and all its votes? This deletes poll.json + votes.json from the poll-data branch and clears local copies.")) return;
   const pid = state.pollId;
   await Store.deletePoll(pid);
+  if(sharedMode && state.orgKey){ try{ await GHIO.removeFromOwnerIndex(await orgKeyHash(state.orgKey), pid); }catch(e){} }
   await Store.del("invites:"+pid);
   await Store.del("currentPollId");
   state.pollId=null; state.invites=null; state.votes={};
@@ -1332,11 +1391,22 @@ function availabilityAggPanel(poll, votes){
 /* ---- Results (organizer reads votes.json) --------------------------- */
 function viewResults(){
   if(!state.pollId){
-    return `<div class="panel"><h2><span class="section-num">04 · </span>Results</h2>
-      <p class="note">No poll on <b>this device</b>. The poll &amp; its votes live on GitHub, but each device
-      needs the poll's link to find them. If you already published a poll (on this or another device), open its
-      <b>“Results (you — any device)”</b> link from the “Poll &amp; invite” tab — it shows the live tally anywhere.
-      Or create a new poll in “Poll &amp; invite”.</p></div>`;
+    const knownKey = state.orgKey || "";
+    return `<div class="panel"><h2><span class="section-num">04 · </span>Results — my polls</h2>
+      <p class="note">See the live tally for any poll <b>you</b> published, from any device. Enter your
+      <b>organizer key</b> (shown in “Poll &amp; invite” after you publish) — or paste a poll link/id.</p>
+      <div class="row">
+        <div><label class="fld">Organizer key</label>
+          <input type="text" id="orgKeyInput" value="${esc(knownKey)}" placeholder="k…"></div>
+        <div style="flex:0"><button class="btn" id="loadMyPolls">Show my polls</button></div>
+      </div>
+      <div id="myPolls" style="margin-top:14px"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:18px 0">
+      <div class="row">
+        <div><label class="fld">Or open one poll by link / id</label>
+          <input type="text" id="pollIdInput" placeholder="pxnxB8uLw  or a full results link"></div>
+        <div style="flex:0"><button class="btn ghost" id="openPollId">Open results</button></div>
+      </div></div>`;
   }
   const poll = lcache("poll:"+state.pollId) || {
     slots: state.slots, roster: state.roster.filter(r=>(r.name||"").trim())
@@ -1411,11 +1481,45 @@ function lcache(k){ try{ const v=localStorage.getItem("czmc:"+k); return v?JSON.
 
 let resultsTimer=null;
 function wireResults(){
-  document.getElementById("refreshResults")?.addEventListener("click", refreshResults);
   if(resultsTimer){ clearInterval(resultsTimer); resultsTimer=null; }
+  if(!state.pollId){
+    // "My polls" empty-state wiring
+    document.getElementById("loadMyPolls")?.addEventListener("click", loadMyPolls);
+    document.getElementById("openPollId")?.addEventListener("click", ()=>{
+      const raw=(document.getElementById("pollIdInput")?.value||"").trim();
+      const m=raw.match(/poll=([A-Za-z0-9_-]+)/);
+      const id=m?m[1]:raw.replace(/[^A-Za-z0-9_-]/g,"");
+      if(id) location.hash = "poll="+encodeURIComponent(id)+"&admin";   // hashchange -> reload -> admin route
+    });
+    if(state.orgKey) loadMyPolls();        // auto-list on a device that already knows the key
+    return;
+  }
+  document.getElementById("refreshResults")?.addEventListener("click", refreshResults);
   if(sharedMode && state.pollId){
     resultsTimer = setInterval(()=>{ if(view==="results") refreshResults(); else { clearInterval(resultsTimer); resultsTimer=null; } }, 5000);
   }
+}
+async function loadMyPolls(){
+  const cont = document.getElementById("myPolls"); if(!cont) return;
+  const key = (document.getElementById("orgKeyInput")?.value||"").trim();
+  if(!key){ cont.innerHTML = `<p class="awaiting">Enter your organizer key first.</p>`; return; }
+  await Store.set("orgKey", key); state.orgKey = key;
+  cont.innerHTML = `<p class="note">Loading your polls…</p>`;
+  let idx=null;
+  try{ idx = await GHIO.readJson(GHIO.ownerIndexPath(await orgKeyHash(key))); }catch(e){}
+  const polls = idx && idx.polls ? Object.entries(idx.polls) : [];
+  if(!polls.length){
+    cont.innerHTML = `<p class="awaiting">No polls found for that key. Publish a poll on a device using this key, or double-check the key.</p>`;
+    return;
+  }
+  polls.sort((a,b)=>String(b[1].updatedAt||"").localeCompare(String(a[1].updatedAt||"")));
+  cont.innerHTML = `<div class="tally-labels" style="margin:0 0 8px">${polls.length} poll${polls.length>1?"s":""}:</div>` +
+    polls.map(([id,m])=>`
+    <div class="invite-row">
+      <span class="who">${esc(m.title||id)}</span>
+      <span class="lnk mono" title="${esc(id)}">${esc(id)}</span>
+      <a class="btn ghost" href="#poll=${encodeURIComponent(id)}&admin">View results</a>
+    </div>`).join("");
 }
 async function refreshResults(){
   if(!state.pollId) return;
