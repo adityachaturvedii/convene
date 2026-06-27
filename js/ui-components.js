@@ -18,21 +18,22 @@ export function organizerShell(){
   <header class="masthead">
     <div>
       <p class="eyebrow" id="eyebrow">Convene · cross-zone scheduling</p>
-      <h1 id="title">${esc(meta.title)}</h1>
-      <p class="sub" id="subline">Find the least-cruel common slot. Working hours are shaded per zone; the overlap is where everyone is awake and at work.</p>
+      <h1 id="title">Convene</h1>
+      <p class="sub" id="subline">Find a meeting time that works across timezones — then collect everyone's vote. No logins, no backend.</p>
     </div>
-    <div class="gap-readout">
+    <div class="gap-readout" style="display:none">
       <span class="big mono" id="gapBig">—</span>
       <small id="gapLabel">offset today</small>
     </div>
   </header>
   <div id="modebar"></div>
   <nav class="tabs" id="tabs" role="tablist">
-    <button class="tab" role="tab" data-view="setup" aria-selected="false">Setup</button>
-    <button class="tab" role="tab" data-view="overlap" aria-selected="true">Overlap board</button>
+    <button class="tab" role="tab" data-view="home" aria-selected="true">Home</button>
+    <button class="tab" role="tab" data-view="overlap" aria-selected="false">Overlap board</button>
     <button class="tab" role="tab" data-view="recurring" aria-selected="false">Recurring slot</button>
     <button class="tab" role="tab" data-view="poll" aria-selected="false">Poll &amp; invite</button>
     <button class="tab" role="tab" data-view="results" aria-selected="false">Results</button>
+    <button class="tab" role="tab" data-view="setup" aria-selected="false">Setup</button>
   </nav>
   <div id="app"><div class="loading">Loading…</div></div>`;
   document.getElementById("tabs").addEventListener("click", e=>{
@@ -51,7 +52,16 @@ export function renderModebar(){
 }
 
 export function renderHeader(){
-  const t = document.getElementById("title"); if(t) t.textContent = state.meta.title;
+  const onHome = appState.view==="home";
+  const t = document.getElementById("title");
+  const sub = document.getElementById("subline");
+  const gap = document.querySelector(".gap-readout");
+  if(t) t.textContent = onHome ? "Convene" : (state.meta.title || "Meeting");
+  if(sub) sub.textContent = onHome
+    ? "Find a meeting time that works across timezones — then collect everyone's vote. No logins, no backend."
+    : "Find the least-cruel common slot. Working hours are shaded per zone; the overlap is where everyone is awake and at work.";
+  if(gap) gap.style.display = onHome ? "none" : "";
+  if(onHome) return;
   const g = currentGap();
   if(g && document.getElementById("gapBig")){
     document.getElementById("gapBig").textContent = (g.hours>0?"+":"")+g.hours+"h";
@@ -60,8 +70,43 @@ export function renderHeader(){
   }
 }
 
+export function viewHome(){
+  const active = state.pollId
+    ? `<div class="panel" style="background:var(--work-bg);border-color:#bfe5dd">
+        <b style="color:#0a6f60">● Loaded:</b> "${esc(state.meta.title)}" <span class="pill">${esc(state.pollId)}</span>
+        — open <button class="link" data-go="poll">Poll &amp; invite</button> or
+        <button class="link" data-go="results">Results</button>.</div>`
+    : "";
+  return `${active}
+  <div class="panel home-hero">
+    <h2 style="font-size:19px;margin-bottom:4px">Plan a cross-zone meeting</h2>
+    <p class="note">Pick candidate times, share one link, and let everyone vote + share their weekly availability.
+      Convene shows where the whole team converges. Nothing here is loaded until you choose below.</p>
+    <div class="home-actions">
+      <button class="home-card" data-go="poll-new"><span class="hc-ic">＋</span>
+        <span class="hc-t">Create a new poll</span><span class="hc-d">Set candidate times &amp; invite people</span></button>
+      <button class="home-card" data-go="poll-find"><span class="hc-ic">🔎</span>
+        <span class="hc-t">Open an existing poll</span><span class="hc-d">By your name / email or its id</span></button>
+      <button class="home-card" data-go="results"><span class="hc-ic">📊</span>
+        <span class="hc-t">View results</span><span class="hc-d">Live tally &amp; best converging times</span></button>
+      <button class="home-card" data-go="overlap"><span class="hc-ic">🌍</span>
+        <span class="hc-t">Overlap board</span><span class="hc-d">Live world-clock &amp; the team's overlap</span></button>
+    </div>
+  </div>`;
+}
+export function wireHome(){
+  document.querySelectorAll("[data-go]").forEach(b=>b.addEventListener("click", ()=>{
+    const g=b.dataset.go;
+    if(g==="poll-find"){ setView("poll"); render(); setTimeout(()=>document.getElementById("pollLoadWho")?.focus(),60); }
+    else if(g==="poll-new" || g==="poll"){ setView("poll"); render(); }
+    else { setView(g); render(); }
+    window.scrollTo({top:0});
+  }));
+}
+
 export function render(){
   renderHeader();
+  if(appState.view==="home")      { app().innerHTML = viewHome(); wireHome(); }
   if(appState.view==="overlap")   { app().innerHTML = viewOverlap(); wireOverlap(); }
   if(appState.view==="recurring") { app().innerHTML = viewRecurring(); }
   if(appState.view==="poll"){ app().innerHTML = viewPoll(); wirePoll(); }
@@ -347,10 +392,15 @@ export function viewPoll(){
   </div>
 
   <div class="panel">
-    <h2>Publish &amp; invite links</h2>
-    <p class="note">${sharedMode
-      ? "Publishing generates a poll id and a private token per person, then commits poll.json straight to the poll-data branch (~1-2s). Share each per-person link, or the one central link, with people."
-      : "Local mode: publishing generates the poll + invite links locally so you can preview them. Deploy to GitHub to collect real votes."}</p>
+    <h2>${state.invites ? "Invite links" : (state.pollId ? "Live poll — invite links" : "Publish &amp; invite links")}</h2>
+    <p class="note">${
+      state.invites
+        ? "This poll is live. Share the <b>central link</b> with everyone, or the per-person links individually. Edit times/invitees above and <b>Re-publish</b> to update it (your existing links stay valid)."
+        : state.pollId
+          ? `You're viewing live poll <span class="mono">${esc(state.pollId)}</span>, loaded from GitHub. Share its <b>central link</b> and <b>results link</b> below. Per-person tokenised links live only on the device that created it.`
+          : (sharedMode
+              ? "Set the title, times and invitees above, then publish to commit the poll to GitHub (~1–2s) and get <b>one shareable central link</b> (plus per-person links)."
+              : "Local mode: publishing generates the poll + invite links locally so you can preview them. Deploy to GitHub to collect real votes.")}</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button class="btn" id="publishPoll">${state.pollId?"Re-publish poll":"Create / publish poll"}</button>
       ${state.pollId?`<button class="btn danger" id="deletePoll">Delete this poll + all its data</button>`:""}

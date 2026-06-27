@@ -24,7 +24,7 @@ export const COMMON_TZS = ["Europe/Berlin","Europe/Budapest","Australia/Melbourn
   "Asia/Kolkata","Asia/Tokyo","Asia/Shanghai","Europe/London","America/New_York","America/Los_Angeles","UTC"];
 
 export let state = { meta:{...DEFAULTS.meta}, zones:DEFAULTS.zones.map(z=>({...z})), roster:DEFAULTS.roster.map(r=>({...r})), slots:[], votes:{}, pollId:null, organizer:"", invites:null };
-export let appState = { view: "overlap", appMode: "organizer", convergeAllOnly: false };
+export let appState = { view: "home", appMode: "organizer", convergeAllOnly: false };
 
 export function setView(v) { appState.view = v; }
 export function setAppMode(m) { appState.appMode = m; }
@@ -43,9 +43,12 @@ export async function loadOrganizerState(){
   if(!state.slots){ state.slots = seedSlots(); await Store.set("slots", state.slots); }
   state.organizer = await Store.get("organizer") || "";
   state.organizerEmail = await Store.get("organizerEmail") || "";
-  state.pollId    = await Store.get("currentPollId") || null;
-  state.invites   = await Store.get("invites:"+(state.pollId||"")) || null;
-  state.votes = state.pollId ? (await Store.loadVotes(state.pollId)) : {};
+  // Do NOT auto-restore a previously-active poll from localStorage. The app lands on
+  // a clean Home; a poll's data + invite links are shown only after you explicitly
+  // create or load one (so the landing isn't a stale browser-cached draft).
+  state.pollId  = null;
+  state.invites = null;
+  state.votes   = {};
 }
 
 export function seedSlots(){
