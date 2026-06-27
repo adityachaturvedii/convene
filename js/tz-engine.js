@@ -8,7 +8,7 @@ function getDtf(locale, options) {
 export const WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 export const FULL_WD = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
-export function tzOffsetMin(tz, date){
+export function tzOffsetMin(tz, date = new Date()){
   const dtf = getDtf("en-US", {timeZone:tz, hour12:false,
     year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit"});
   const p = {}; 
