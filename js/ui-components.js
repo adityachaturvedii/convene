@@ -1,4 +1,4 @@
-import { state, appState, setView, setConvergeAllOnly, currentGap, computeRecommendation, saveMeta, saveZones, saveRoster, saveSlots, indexMyPoll, unindexMyPoll, zoneById, COMMON_TZS } from "./state.js";
+import { state, appState, setView, setConvergeAllOnly, currentGap, computeRecommendation, saveMeta, saveZones, saveRoster, saveSlots, indexMyPoll, unindexMyPoll, zoneById, COMMON_TZS, adoptRemotePoll, lookupMyPolls } from "./state.js";
 import { Store, GHIO, sharedMode, GH, ownerSet, repoSet } from "./github-store.js";
 import { esc, uid, randomToken, sha256Hex } from "./utils.js";
 import { WD, FULL_WD, zonedWallToUtc, localParts, nearestWeekdayDate, fmtMin, localPartsFull, classify, CLASS_LABEL } from "./tz-engine.js";
@@ -298,9 +298,30 @@ export function viewPoll(){
       <td><button class="link" data-rdel="${r.id}">remove</button></td>
     </tr>`).join("");
 
-  const invitePanel = state.invites ? renderInvitePanel() : "";
+  const invitePanel = (state.invites || state.pollId) ? renderInvitePanel() : "";
 
-  return `
+  const loadPanel = `
+  <div class="panel">
+    <h2>Load a live poll</h2>
+    <p class="note">View &amp; share the links for a poll that's already published (e.g. created on another
+      device or from the backend). Find it by your organizer name/email, or paste its id / link.</p>
+    <div class="row">
+      <div><label class="fld" for="pollLoadWho">Your name or email</label>
+        <input type="text" id="pollLoadWho" value="${esc(state.organizer||state.organizerEmail||"")}" placeholder="e.g. Aditya"></div>
+      <div style="flex:0"><button class="btn ghost" id="pollFindMine">Find my polls</button></div>
+    </div>
+    <div id="pollFindList" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:10px">
+      <div><label class="fld" for="pollLoadId">Or poll id / link</label>
+        <input type="text" id="pollLoadId" placeholder="e.g. py-OIE1z8  or a full link"></div>
+      <div style="flex:0"><button class="btn ghost" id="pollOpenId">Open</button></div>
+    </div>
+    ${state.pollId?`<p class="storage-note" style="margin-top:11px;color:#0a6f60">● Now viewing live poll
+      <b class="mono">${esc(state.pollId)}</b> — "${esc(state.meta.title)}". Its links are below.
+      <button class="link" id="pollClearLive">view a different / new poll</button></p>`:""}
+  </div>`;
+
+  return loadPanel + `
   <div class="panel">
     <h2><span class="section-num">03 · </span>Meeting &amp; candidate slots</h2>
     <p class="note">Set the title and the times you want to offer. Pick the timezone you're
@@ -331,8 +352,8 @@ export function viewPoll(){
       ? "Publishing generates a poll id and a private token per person, then commits poll.json straight to the poll-data branch (~1-2s). Share each per-person link, or the one central link, with people."
       : "Local mode: publishing generates the poll + invite links locally so you can preview them. Deploy to GitHub to collect real votes."}</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button class="btn" id="publishPoll">${state.invites?"Re-publish poll":"Create / publish poll"}</button>
-      ${state.invites?`<button class="btn danger" id="deletePoll">Delete this poll + all its data</button>`:""}
+      <button class="btn" id="publishPoll">${state.pollId?"Re-publish poll":"Create / publish poll"}</button>
+      ${state.pollId?`<button class="btn danger" id="deletePoll">Delete this poll + all its data</button>`:""}
       <span id="publishState" class="storage-note" aria-live="polite"></span>
     </div>
     ${invitePanel}
@@ -340,8 +361,11 @@ export function viewPoll(){
 }
 
 export function renderInvitePanel(){
-  const inv = state.invites;
-  const rows = inv.links.map(l=>`
+  // works for a locally-created poll (full per-person links) OR a loaded live poll
+  // (only the central + results links — per-person tokens live on the creating device).
+  const inv = state.invites || { pollId: state.pollId, links: [] };
+  const links = inv.links || [];
+  const rows = links.map(l=>`
     <div class="invite-row">
       <span class="who">${esc(l.name)}</span>
       <span class="lnk" title="${esc(l.url)}">${esc(l.url)}</span>
@@ -365,11 +389,12 @@ export function renderInvitePanel(){
   <div class="invite-list">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
       <span class="pill">poll ${esc(inv.pollId)}</span>
-      <button class="btn ghost" id="copyAll">Copy all invite links</button>
+      ${links.length?`<button class="btn ghost" id="copyAll">Copy all invite links</button>`:""}
     </div>
     ${adminRow}
     ${centralRow}
     ${rows}
+    ${links.length?"":`<p class="storage-note" style="margin-top:8px">Per-person tokenised links live only on the device that created this poll. Use the <b>central link</b> above — it's safe to share with everyone.</p>`}
     <p class="storage-note" style="margin-top:8px">📊 To see results on another device: open <b>Results → My polls</b> and enter your organizer ${state.organizerEmail?`<b>name or email</b> (${esc(state.organizer)} / ${esc(state.organizerEmail)})`:`<b>name</b> (${esc(state.organizer||"set it above")})`}.</p>
     <p class="storage-note" style="margin-top:8px">Each per-person link contains a one-time private token. Anyone with a person's link can answer as that person, so send those individually. The <b>central link</b> is safe to forward to anyone — it asks each responder for their name + email (the email is stored only as a private hash, never shown).</p>
   </div>`;
@@ -422,6 +447,47 @@ export function wirePoll(){
   document.querySelectorAll("[data-copyone]").forEach(b=>b.addEventListener("click", ()=>{
     copyToClipboard(b.dataset.copyone, b);
   }));
+
+  // ---- load a live (already-published) poll into this view ----
+  document.getElementById("pollFindMine")?.addEventListener("click", async ()=>{
+    const cont=document.getElementById("pollFindList");
+    const val=(document.getElementById("pollLoadWho")?.value||"").trim();
+    if(!cont) return;
+    if(!val){ cont.innerHTML=`<p class="awaiting">Enter your name or email.</p>`; return; }
+    cont.innerHTML=`<p class="note">Loading your polls…</p>`;
+    let r=null; try{ r=await lookupMyPolls(val); }catch(e){}
+    if(!r){ cont.innerHTML=`<p class="awaiting">Couldn't load — check your connection.</p>`; return; }
+    if(r.needEmail){ cont.innerHTML=`<p class="awaiting" style="color:var(--edge)">Multiple organizers used that name — enter the email you published with.</p>`; return; }
+    const polls = r.polls ? Object.entries(r.polls) : [];
+    if(!polls.length){ cont.innerHTML=`<p class="awaiting">No polls found for that name/email.</p>`; return; }
+    polls.sort((a,b)=>String(b[1].updatedAt||"").localeCompare(String(a[1].updatedAt||"")));
+    cont.innerHTML = polls.map(([id,m])=>`
+      <div class="invite-row"><span class="who">${esc(m.title||id)}</span>
+        <span class="lnk mono" title="${esc(id)}">${esc(id)}</span>
+        <button class="btn ghost" data-openpoll="${esc(id)}">Open</button></div>`).join("");
+    cont.querySelectorAll("[data-openpoll]").forEach(b=>b.addEventListener("click", ()=>loadLivePoll(b.dataset.openpoll)));
+  });
+  document.getElementById("pollOpenId")?.addEventListener("click", ()=>{
+    const raw=(document.getElementById("pollLoadId")?.value||"").trim();
+    const m=raw.match(/poll=([A-Za-z0-9_-]+)/);
+    const id=m?m[1]:raw.replace(/[^A-Za-z0-9_-]/g,"");
+    if(id) loadLivePoll(id);
+  });
+  document.getElementById("pollClearLive")?.addEventListener("click", async ()=>{
+    state.pollId=null; state.invites=null; state.votes={};
+    await Store.del("currentPollId");
+    render();
+  });
+}
+
+async function loadLivePoll(id){
+  const cont=document.getElementById("pollFindList"); if(cont) cont.innerHTML=`<p class="note">Loading poll ${esc(id)}…</p>`;
+  let poll=null;
+  try{ poll = await Store.loadPoll(id); }catch(e){}
+  if(!poll){ if(cont) cont.innerHTML=`<p class="awaiting">Poll <b>${esc(id)}</b> not found.</p>`; return; }
+  await adoptRemotePoll(id);
+  await Store.set("currentPollId", id);
+  render();
 }
 
 export function copyToClipboard(text, btn){

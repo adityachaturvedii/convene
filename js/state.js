@@ -126,6 +126,8 @@ export async function adoptRemotePoll(pollId){
       duration: poll.duration || state.meta.duration };
     if(Array.isArray(poll.zones) && poll.zones.length) state.zones = poll.zones.map(z=>({...z}));
     if(Array.isArray(poll.slots)) state.slots = poll.slots.map(s=>({...s}));
+    // adopt the published roster (names + zone; emails are never on the branch)
+    if(Array.isArray(poll.roster)) state.roster = poll.roster.map(r=>({ id:r.rosterId, name:r.name, email:"", zoneId:r.zoneId }));
   }
   state.votes = await Store.loadVotes(pollId) || {};
 }
