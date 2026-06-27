@@ -466,7 +466,7 @@ function refWeekday(y,m,d,tz){
 function nearestWeekdayDate(y,m,d,target,tz){
   for(let off=0;off<7;off++){
     const dt = new Date(Date.UTC(y,m-1,d+off));
-    if(refWeekday(dt.getUTCFullYear(),dt.getUTCMonth()+1,dt.getUTCDate(),target,tz)===target)
+    if(refWeekday(dt.getUTCFullYear(),dt.getUTCMonth()+1,dt.getUTCDate(),tz)===target)
       return {y:dt.getUTCFullYear(),m:dt.getUTCMonth()+1,d:dt.getUTCDate()};
   }
   return {y,m,d};
