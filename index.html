@@ -1405,6 +1405,16 @@ async function deleteCurrentPoll(){
    For every voter entry that carries `availability`, convert each free LOCAL
    hour into the poll's REFERENCE zone and tally how many people are free at
    each ref-zone hour per day. Render a readable heat strip + best hour/day. */
+// Filter state for the convergence section: show only times where ALL availability
+// sharers are free. Global so the inline toggle can re-render the active view.
+let convergeAllOnly = false;
+let appMode = "organizer";
+function convToggle(el){
+  convergeAllOnly = !!(el && el.checked);
+  if(appMode==="responder"){ if(Responder.refreshDashboard) Responder.refreshDashboard(); }
+  else if(typeof view!=="undefined" && view==="results"){ refreshResults(); }
+}
+
 // Convergence: from EVERY respondent who shared weekly availability (any answer),
 // convert each free local hour to the reference zone, rank the times where the most
 // people are free, and surface them as concrete meeting suggestions (+ per-zone times).
@@ -1444,7 +1454,9 @@ function convergencePanel(poll, votes, opts){
   Object.entries(dayCount).forEach(([dISO, hours])=>
     Object.entries(hours).forEach(([h,c])=> flat.push({ dISO, h:+h, c, meta:dayMeta[dISO] })));
   flat.sort((a,b)=> b.c-a.c || a.dISO.localeCompare(b.dISO) || a.h-b.h);
-  const top = flat.filter(x=>x.c>0).slice(0, opts.responder?4:6);
+  let ranked = flat.filter(x=>x.c>0);
+  if(convergeAllOnly) ranked = ranked.filter(x=>x.c===M);   // only times EVERYONE is free
+  const top = ranked.slice(0, opts.responder?4:6);
   const maxC = top.length ? top[0].c : 0;
   const zonesMulti = (poll.zones||[]).length>1;
   const suggestions = top.map((x,i)=>{
@@ -1480,7 +1492,12 @@ function convergencePanel(poll, votes, opts){
     <p class="note">From <b>${M}</b> ${M===1?"person":"people"} who shared weekly availability. Ranked by how many
       are free, in <b>${esc(refTz.split("/").pop())}</b>${zonesMulti?" (each zone shown under the time)":""}.
       Approximate around date boundaries.</p>
-    ${suggestions||'<p class="note">No overlapping free time yet.</p>'}
+    <label style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);margin:0 0 13px;cursor:pointer">
+      <input type="checkbox" ${convergeAllOnly?"checked":""} onchange="convToggle(this)" style="width:auto;margin:0">
+      Only times when <b>everyone</b> (all ${M}) is free</label>
+    ${suggestions || (convergeAllOnly
+      ? `<p class="note" style="color:var(--edge)">No single time works for all ${M} who shared availability yet — uncheck to see the closest options.</p>`
+      : '<p class="note">No overlapping free time yet.</p>')}
     ${opts.responder ? "" : `<details style="margin-top:14px"><summary class="note" style="cursor:pointer;display:inline-block">Full weekly heatmap (${pad(H0)}:00–${pad(H1)}:00 ${esc(refTz.split("/").pop())})</summary><div style="margin-top:10px">${heatRows}</div></details>`}
   </div>`;
 }
@@ -2278,7 +2295,8 @@ const Responder = (() => {
     }, 5000);
   }
 
-  return { start };
+  // expose a dashboard re-render so the global convergence filter toggle can refresh it
+  return { start, refreshDashboard: ()=>{ if(submitted) refreshDash(); } };
 })();
 
 /* ====================================================================
@@ -2287,6 +2305,7 @@ const Responder = (() => {
 (async function init(){
   try{
     const h = parseHash();
+    appMode = (h.poll && !h.admin) ? "responder" : "organizer";
     if(h.poll && !h.admin){
       // RESPONDER MODE
       await Responder.start(h);
