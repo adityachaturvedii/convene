@@ -18,8 +18,11 @@ export function convergencePanel(poll, votes, opts){
   opts = opts || {};
   const refTz = poll.refTz;
   const pad = n => String(n).padStart(2,"0");
+  // Include EVERY respondent who shared weekly availability, regardless of their
+  // Yes/Maybe/No answers (the refactor wrongly limited this to all-"n" voters,
+  // and "n" never matched the real value "no" — so it always came up empty).
   const contributors = Object.values(votes||{})
-    .filter(v => v && v.availability && Object.keys(v.availability).length && (!v.responses || Object.values(v.responses).every(ans => ans === "n")))
+    .filter(v => v && v.availability && Object.keys(v.availability).length)
     .map(v => ({ tz: v.tz || refTz, avail: v.availability }));
   if(!contributors.length){
     if(opts.responder) return "";
