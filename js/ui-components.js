@@ -231,10 +231,13 @@ export function viewPoll(){
     </div>`;
   }).join("");
 
+  const tzOptions = state.zones.map(z=>
+    `<option value="${esc(z.tz)}" ${z.tz===state.meta.refTz?"selected":""}>${esc(z.label)} (${esc(z.tz.split("/").pop())})</option>`).join("");
   const addForm = `
     <div class="row">
       <div><label class="fld" for="newDate">Date</label><input type="date" id="newDate"></div>
-      <div><label class="fld" for="newTime">Time (${state.meta.refTz.split("/").pop()})</label><input type="time" id="newTime" value="09:00"></div>
+      <div><label class="fld" for="newTime">Time</label><input type="time" id="newTime" value="09:00"></div>
+      <div><label class="fld" for="newTz">Timezone</label><select id="newTz">${tzOptions}</select></div>
       <div><label class="fld" for="newLabel">Label (optional)</label><input type="text" id="newLabel" placeholder="e.g. backup"></div>
       <div style="flex:0"><button class="btn" id="addSlot">Add slot</button></div>
     </div>`;
@@ -253,8 +256,8 @@ export function viewPoll(){
   return `
   <div class="panel">
     <h2><span class="section-num">03 · </span>Meeting &amp; candidate slots</h2>
-    <p class="note">Set the title and the times you want to offer. Times are entered in
-      ${state.meta.refTz.split("/").pop()} and convert for everyone automatically.</p>
+    <p class="note">Set the title and the times you want to offer. Pick the timezone you're
+      entering each time in — it converts for everyone automatically.</p>
     <div class="row" style="margin-bottom:14px">
       <div><label class="fld" for="pollTitle">Meeting title</label><input type="text" id="pollTitle" value="${esc(state.meta.title)}"></div>
       <div><label class="fld" for="orgName">Organizer name</label><input type="text" id="orgName" value="${esc(state.organizer)}" placeholder="e.g. Aditya"></div>
@@ -343,7 +346,8 @@ export function wirePoll(){
     const d=document.getElementById("newDate").value, t=document.getElementById("newTime").value;
     if(!d||!t){ alert("Pick a date and time."); return; }
     const [y,mo,da]=d.split("-").map(Number); const [h,mi]=t.split(":").map(Number);
-    const utc=zonedWallToUtc(y,mo,da,h,mi,state.meta.refTz);
+    const tz=document.getElementById("newTz")?.value || state.meta.refTz;   // enter in the chosen zone
+    const utc=zonedWallToUtc(y,mo,da,h,mi,tz);
     state.slots.push({id:"s_"+uid(), utc:utc.toISOString(), label:document.getElementById("newLabel").value.trim()});
     await saveSlots(); render();
   });
