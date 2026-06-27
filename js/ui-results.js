@@ -88,7 +88,7 @@ export function convergencePanel(poll, votes, opts){
     <p class="note">From <b>${M}</b> ${M===1?"person":"people"} who shared weekly availability. Ranked by how many are free, in <b>${esc(refTz.split("/").pop())}</b>${zonesMulti?" (each zone shown under the time)":""}. Approximate around date boundaries.</p>
     <label style="display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);margin:0 0 13px;cursor:pointer">
       <input type="checkbox" id="convToggleCb" ${appState.convergeAllOnly?"checked":""} style="width:auto;margin:0">
-      Only times when <b>everyone</b> (all ${M}) is free</label>
+      Show when <b>everyone</b> is free</label>
     ${suggestions || (appState.convergeAllOnly
       ? `<p class="note" style="color:var(--edge)">No single time works for all ${M} who shared availability yet — uncheck to see the closest options.</p>`
       : '<p class="note">No overlapping free time yet.</p>')}
@@ -237,16 +237,23 @@ export function rankedTally(slots, votes, displayTz, opts){
 
 export function awaitingChips(responded, awaiting, guests){
   if(!responded.length && !awaiting.length && !guests.length) return "";
+  const initials = n => {
+    const p = String(n||"").trim().split(/\s+/).filter(Boolean);
+    return ((p[0]?.[0]||"") + (p[1]?.[0]||"")).toUpperCase() || "?";
+  };
+  const person = (n, cls) => `<div class="person"><span class="avatar ${cls}" title="${esc(n)}">${esc(initials(n))}</span><span class="pname">${esc(n)}</span></div>`;
+  const total = responded.length + awaiting.length;
   return `<div class="panel">
-    <h2>Who has responded</h2>
-    <div class="chips">
-      ${responded.map(n=>`<span class="chip-r">✓ ${esc(n)}</span>`).join("")}
-      ${awaiting.map(n=>`<span class="chip-a">${esc(n)}</span>`).join("")}
-      ${guests.map(n=>`<span class="chip-g">+ ${esc(n)}</span>`).join("")}
+    <h2>Who has responded ${total?`<span class="pill">${responded.length}/${total}</span>`:""}</h2>
+    <div class="people">
+      ${responded.map(n=>person(n,"done")).join("")}
+      ${awaiting.map(n=>person(n,"wait")).join("")}
+      ${guests.map(n=>person(n,"guest")).join("")}
     </div>
-    <p class="note" style="margin-top:11px"><span style="color:#0a6f60">✓ responded</span> ·
-      <span style="color:var(--muted)">awaiting</span> ·
-      <span style="color:#8a5c06">+ guest (not on the invite list)</span></p>
+    <p class="note" style="margin-top:16px">
+      <span class="lg"><i class="lg-done"></i> responded</span>
+      <span class="lg"><i class="lg-wait"></i> awaiting</span>
+      <span class="lg"><i class="lg-guest"></i> guest (not on the invite list)</span></p>
   </div>`;
 }
 
