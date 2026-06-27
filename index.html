@@ -5,14 +5,16 @@
   and collect votes from invitees via per-person tokenized invite links.
 
   ARCHITECTURE (see INTEGRATION CONTRACT):
-  - One PUBLIC GitHub repo. 'main' = this app + workflows (served by Pages
-    as index.html). Orphan branch 'poll-data' = committed poll/vote JSON.
-  - WRITE: browser fires repository_dispatch (event_type "poll-op"); a
-    GitHub Action ingests the client_payload and commits to poll-data.
-  - READ: browser fetches raw.githubusercontent.com (keyless, public).
+  - One PUBLIC GitHub repo. 'main' = this app (served by Pages as index.html).
+    Orphan branch 'poll-data' = committed poll/vote JSON.
+  - WRITE: the browser commits DIRECTLY to the poll-data branch via the GitHub
+    Contents API (PUT poll.json / votes.json, ~1-2s). The old repository_dispatch
+    + ingest-Action write path is RETIRED (the Action is disabled separately).
+  - READ: the browser GETs the same files via the authenticated Contents API so
+    reads are always fresh (raw.githubusercontent is CDN-cached and can lag).
   - All persistence is behind the Store adapter (one swap point). It ALWAYS
     uses localStorage (cache + local-only source of truth) and, when
-    sharedMode, also dispatches writes / fetches reads from GitHub.
+    sharedMode, also commits/reads directly to/from GitHub.
   - If GH.dispatchToken is still the placeholder or empty => LOCAL-ONLY mode:
     the app fully works locally, shows a notice, makes no network calls.
 -->
@@ -78,23 +80,27 @@
   .section-num{font-family:"IBM Plex Mono",monospace;color:var(--accent);
     font-size:11px;letter-spacing:.1em;}
 
-  /* board */
-  .board-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;}
-  table.board{border-collapse:collapse;width:100%;min-width:760px;font-family:"IBM Plex Mono",monospace;}
-  table.board th,table.board td{padding:0;text-align:center;font-size:11.5px;font-weight:400;}
+  /* board (CHANGE 4 — roomier, comfortably scrollable) */
+  .board-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;
+    border:1px solid var(--line);border-radius:8px;}
+  /* wider min-width + per-column min-width so the 24 hourly columns get air */
+  table.board{border-collapse:collapse;width:100%;min-width:1180px;
+    font-family:"IBM Plex Mono",monospace;table-layout:fixed;}
+  table.board th,table.board td{padding:0;text-align:center;font-size:13px;font-weight:400;}
+  table.board th.b-hour,table.board td.cell{min-width:40px;width:40px;}
   .b-zonecol{position:sticky;left:0;background:var(--panel);text-align:left;
-    padding:8px 12px!important;min-width:172px;border-right:1px solid var(--line-strong);
+    padding:10px 14px!important;min-width:188px;width:188px;border-right:1px solid var(--line-strong);
     font-family:"IBM Plex Sans",sans-serif;z-index:2;}
   .b-zonecol .zname{font-size:12px;font-weight:600;}
   .b-zonecol .ztz{font-size:10.5px;color:var(--muted);}
-  thead .b-hour{padding:6px 0 4px;color:var(--muted);font-size:10.5px;border-bottom:1px solid var(--line);}
-  .b-overlap-row td{height:7px;}
+  thead .b-hour{padding:8px 4px 6px;color:var(--muted);font-size:11.5px;border-bottom:1px solid var(--line);}
+  .b-overlap-row td{height:8px;}
   /* differentiate overlap markers by texture+border, not hue alone (a11y) */
   .b-mark-work{background:var(--work);}
   .b-mark-edge{background:var(--edge);
     background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.28) 0 2px,transparent 2px 5px);
     border-top:1px solid #6e4a05;border-bottom:1px solid #6e4a05;}
-  td.cell{height:34px;border-left:1px solid #EFF2F3;border-bottom:1px solid #EFF2F3;color:#46545d;}
+  td.cell{height:44px;padding:0 6px;border-left:1px solid #EFF2F3;border-bottom:1px solid #EFF2F3;color:#46545d;}
   td.cell.work{background:var(--work-bg);color:#0a6f60;}
   td.cell.edge{background:var(--edge-bg);color:#8a5c06;}
   td.cell.off{background:var(--off-bg);color:#a23a4e;}
@@ -221,6 +227,33 @@
   .trust{font-size:11.5px;color:var(--muted);margin-top:14px;line-height:1.5;
     border-top:1px solid var(--line);padding-top:12px;}
 
+  /* central entry form (CHANGE 2) */
+  .central-notice{font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.5;
+    background:var(--accent-bg);border:1px solid #cfe0e6;border-radius:7px;padding:9px 11px;}
+  .email-err{font-size:12px;color:var(--off);margin-top:4px;}
+
+  /* availability grid (CHANGE 3, responder) */
+  .av-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;}
+  table.avgrid{border-collapse:collapse;width:100%;min-width:560px;font-family:"IBM Plex Mono",monospace;}
+  table.avgrid th,table.avgrid td{text-align:center;font-size:11.5px;font-weight:400;border:1px solid #EFF2F3;}
+  table.avgrid thead .av-hr{padding:6px 0 5px;color:var(--muted);font-size:10.5px;}
+  .av-daycol{position:sticky;left:0;background:var(--panel);text-align:left;padding:8px 12px;
+    min-width:120px;border-right:1px solid var(--line-strong)!important;
+    font-family:"IBM Plex Sans",sans-serif;font-size:12px;font-weight:600;z-index:2;}
+  td.av-cell{height:34px;min-width:30px;cursor:pointer;color:#0a6f60;font-weight:700;user-select:none;}
+  td.av-busy{background:var(--panel);color:#c2cacf;}
+  td.av-free{background:var(--work-bg);color:#0a6f60;box-shadow:inset 0 0 0 1px var(--work);}
+  td.av-cell:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+
+  /* organizer "No voters are free" heat strip (CHANGE 3) */
+  .av-row{display:flex;align-items:center;gap:10px;margin:6px 0;flex-wrap:wrap;}
+  .av-row .av-dlabel{min-width:120px;font-size:12px;font-weight:600;}
+  .heat{display:flex;gap:2px;flex-wrap:nowrap;}
+  .heat .cellh{width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+    font-family:"IBM Plex Mono";font-size:10.5px;border-radius:4px;border:1px solid var(--line);color:var(--muted);}
+  .heat .cellh.best{box-shadow:inset 0 0 0 2px var(--accent);font-weight:700;color:var(--accent);}
+  .av-besttag{font-size:11.5px;color:var(--accent);font-weight:600;}
+
   .loading{padding:60px 0;text-align:center;color:var(--muted);font-family:"IBM Plex Mono";font-size:13px;}
   .storage-note{font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.5;}
   .hide{display:none!important;}
@@ -245,8 +278,10 @@
    place of __POLL_DISPATCH_TOKEN__. owner/repo are replaced at deploy or
    hand-edited. If dispatchToken still equals the placeholder or is empty,
    the app runs LOCAL-ONLY (no network; localStorage is the source of
-   truth). Otherwise sharedMode is on: writes via repository_dispatch,
-   reads via raw.githubusercontent.
+   truth). Otherwise sharedMode is on: writes and reads go DIRECTLY through
+   the GitHub Contents API (commit poll.json / votes.json on the poll-data
+   branch). The token is still named dispatchToken for config compatibility,
+   but it now authenticates Contents-API commits, not repository_dispatch.
    ==================================================================== */
 const GH = {
   owner: "adityachaturvedii",       // baked in; deploy re-injects the same value
@@ -265,35 +300,117 @@ const pagesBase = (ownerSet && repoSet)
   : (location.origin + location.pathname);
 
 /* ====================================================================
-   0b. GITHUB I/O — write via repository_dispatch, read via raw.
-   These are the ONLY functions that talk to GitHub. The Store adapter
-   (section 1) layers localStorage on top of these.
+   0b. GITHUB I/O — DIRECT GitHub Contents-API commits (CHANGE 1).
+   --------------------------------------------------------------------
+   The browser now commits directly to the poll-data branch via the
+   Contents API (~1-2s) instead of firing repository_dispatch and waiting
+   ~30s for a GitHub Action. These are the ONLY functions that talk to
+   GitHub; the Store adapter (section 1) layers localStorage on top.
+
+   The retired repository_dispatch write path has been removed. Reads now
+   also go through the authenticated Contents API (not raw) so they are
+   always fresh (raw is CDN-cached and can lag commits).
    ==================================================================== */
+
+// --- utf8 <-> base64 helpers (handle non-ASCII names safely) ----------
+// encode in chunks to avoid the call-stack limit of String.fromCharCode(...).
+function utf8ToB64(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  const CHUNK = 0x8000;                      // 32k per chunk keeps the stack safe
+  for(let i=0;i<bytes.length;i+=CHUNK){
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i+CHUNK));
+  }
+  return btoa(bin);
+}
+function b64ToUtf8(b64){
+  // GitHub may wrap base64 content with newlines — strip whitespace first.
+  const clean = String(b64||"").replace(/\s+/g,"");
+  return new TextDecoder().decode(Uint8Array.from(atob(clean), c=>c.charCodeAt(0)));
+}
+
+// tagged error so the upsert retry loop can recognise a stale-sha conflict
+function ConflictError(msg){ const e = new Error(msg||"sha conflict"); e.conflict = true; return e; }
+
 const GHIO = {
-  // POST a repository_dispatch with one OPS payload. 204 => accepted.
-  async dispatch(clientPayload){
-    if(!sharedMode) return { ok:false, local:true };
-    const res = await fetch(`https://api.github.com/repos/${GH.owner}/${GH.repo}/dispatches`, {
-      method:"POST",
-      headers:{
-        "Authorization":"Bearer "+GH.dispatchToken,
-        "Accept":"application/vnd.github+json",
-        "X-GitHub-Api-Version":"2022-11-28"
-      },
-      body: JSON.stringify({ event_type:"poll-op", client_payload: clientPayload })
+  ghHeaders(){
+    return {
+      "Authorization":"Bearer "+GH.dispatchToken,
+      "Accept":"application/vnd.github+json",
+      "X-GitHub-Api-Version":"2022-11-28"
+    };
+  },
+  apiUrl(path){
+    return `https://api.github.com/repos/${GH.owner}/${GH.repo}/contents/${path}`;
+  },
+
+  // GET a JSON file on the data branch. 200 => {json, sha}; 404 => {json:null, sha:null}.
+  async ghGetFile(path){
+    const url = this.apiUrl(path) + "?ref=" + encodeURIComponent(GH.dataBranch) + "&cb=" + Date.now();
+    const res = await fetch(url, { headers:this.ghHeaders(), cache:"no-store" });
+    if(res.status === 404) return { json:null, sha:null };
+    if(!res.ok) throw new Error("ghGetFile "+path+" failed: HTTP "+res.status);
+    const data = await res.json();
+    const text = b64ToUtf8(data.content||"");
+    let json = null;
+    try{ json = text.trim() ? JSON.parse(text) : null; }catch(e){ json = null; }
+    return { json, sha:data.sha };
+  },
+
+  // PUT (create/update) a JSON file. Returns the new content sha.
+  // On 409/422 (stale sha) throw a tagged conflict error so callers can retry.
+  async ghPutFile(path, obj, sha, message){
+    const body = {
+      message: message || ("update "+path),
+      content: utf8ToB64(JSON.stringify(obj, null, 0)),
+      branch: GH.dataBranch
+    };
+    if(sha) body.sha = sha;
+    const res = await fetch(this.apiUrl(path), {
+      method:"PUT", headers:this.ghHeaders(), body: JSON.stringify(body)
     });
-    return { ok: res.status === 204, status: res.status };
+    if(res.status === 409 || res.status === 422) throw ConflictError("stale sha for "+path);
+    if(!res.ok) throw new Error("ghPutFile "+path+" failed: HTTP "+res.status);
+    const data = await res.json();
+    return data.content && data.content.sha;
   },
-  // Keyless read of a JSON file from the poll-data branch. 404 => null.
-  async readJson(path){
-    const url = `https://raw.githubusercontent.com/${GH.owner}/${GH.repo}/${GH.dataBranch}/${path}?cb=${Date.now()}`;
-    try{
-      const res = await fetch(url, { cache:"no-store" });
-      if(res.status === 404) return null;       // not synced yet => empty, not an error
-      if(!res.ok) return null;
-      return await res.json();
-    }catch(e){ return null; }
+
+  // DELETE a file via the Contents API (needs its current sha). Ignore 404.
+  async ghDeleteFile(path, message){
+    let sha;
+    try{ const got = await this.ghGetFile(path); sha = got.sha; }
+    catch(e){ sha = null; }
+    if(!sha) return;                         // already absent (404) — nothing to do
+    const res = await fetch(this.apiUrl(path), {
+      method:"DELETE", headers:this.ghHeaders(),
+      body: JSON.stringify({ message: message || ("delete "+path), sha, branch: GH.dataBranch })
+    });
+    if(res.status === 404) return;
+    if(!res.ok && res.status !== 422) throw new Error("ghDeleteFile "+path+" failed: HTTP "+res.status);
   },
+
+  // read-modify-write a single voter row into votes.json with a retry loop.
+  // up to 6 attempts: GET (fresh sha) -> merge votes[voterKey]=entry -> PUT.
+  // On a stale-sha conflict, refetch and retry. Never discards other rows.
+  async upsertVoter(pollId, voterKey, entry){
+    const path = this.votesJsonPath(pollId);
+    let lastErr = null;
+    for(let attempt=0; attempt<6; attempt++){
+      try{
+        const { json, sha } = await this.ghGetFile(path);
+        const votes = json && typeof json === "object" ? { ...json } : {};
+        votes[voterKey] = entry;
+        await this.ghPutFile(path, votes, sha, "vote: "+voterKey);
+        return votes;
+      }catch(e){
+        lastErr = e;
+        if(e && e.conflict) continue;        // stale sha — refetch & retry
+        throw e;                             // non-conflict error — bubble up
+      }
+    }
+    throw lastErr || new Error("upsertVoter: exhausted retries");
+  },
+
   pollJsonPath:  pid => `polls/${pid}/poll.json`,
   votesJsonPath: pid => `polls/${pid}/votes.json`
 };
@@ -303,10 +420,11 @@ const GHIO = {
    --------------------------------------------------------------------
    localStorage is ALWAYS used (cache + local-only source of truth for
    organizer setup and the user's own in-progress vote). When sharedMode,
-   GitHub is layered on: writes are repository_dispatch (POST dispatches),
-   reads are raw.githubusercontent fetches. The four-function shape
-   (get/set/del/list) is preserved for local keys; GitHub-backed poll/vote
-   data uses the explicit dispatch/fetch helpers below it.
+   GitHub is layered on via DIRECT Contents-API commits (CHANGE 1): writes
+   PUT poll.json / votes.json directly to the poll-data branch, reads GET
+   them fresh through the same API. The four-function shape (get/set/del/
+   list) is preserved for local keys; GitHub-backed poll/vote data uses
+   the explicit Contents-API helpers below it.
    ==================================================================== */
 const Store = (() => {
   const PFX = "czmc:";                  // localStorage namespace
@@ -337,44 +455,64 @@ const Store = (() => {
   async function list(pfx){ return llist(pfx); }
 
   // --- GitHub-backed poll/vote ops (sharedMode) with local cache ---
-  // savePoll: cache locally + dispatch save-poll
+  // savePoll: cache locally + PUT poll.json directly; ensure votes.json exists.
   async function savePoll(poll){
     lset("poll:"+poll.id, poll);
-    if(sharedMode) return await GHIO.dispatch({ op:"save-poll", poll });
-    return { ok:false, local:true };
+    if(!sharedMode) return { ok:false, local:true };
+    try{
+      const pollPath = GHIO.pollJsonPath(poll.id);
+      const cur = await GHIO.ghGetFile(pollPath);     // get sha if it already exists
+      await GHIO.ghPutFile(pollPath, poll, cur.sha, "save-poll: "+poll.id);
+      // create an empty votes.json if it isn't there yet (so reads never 404 forever)
+      const vp = GHIO.votesJsonPath(poll.id);
+      const ve = await GHIO.ghGetFile(vp);
+      if(ve.json === null && ve.sha === null){
+        await GHIO.ghPutFile(vp, {}, null, "init votes: "+poll.id);
+      }
+      return { ok:true };
+    }catch(e){
+      return { ok:false, status:e && e.status, error:e };
+    }
   }
-  // loadPoll: prefer remote (sharedMode), fall back to local cache
+  // loadPoll: prefer fresh remote (sharedMode), fall back to local cache
   async function loadPoll(pid){
     if(sharedMode){
-      const remote = await GHIO.readJson(GHIO.pollJsonPath(pid));
-      if(remote){ lset("poll:"+pid, remote); return remote; }
+      try{
+        const { json } = await GHIO.ghGetFile(GHIO.pollJsonPath(pid));
+        if(json){ lset("poll:"+pid, json); return json; }
+      }catch(e){ /* fall through to local cache on transient error */ }
     }
     return lget("poll:"+pid);
   }
-  // loadVotes: prefer remote, fall back to local optimistic cache
+  // loadVotes: prefer fresh remote, fall back to local optimistic cache
   async function loadVotes(pid){
     if(sharedMode){
-      const remote = await GHIO.readJson(GHIO.votesJsonPath(pid));
-      if(remote){ return remote; }
+      try{
+        const { json } = await GHIO.ghGetFile(GHIO.votesJsonPath(pid));
+        if(json){ return json; }
+      }catch(e){ /* fall through to local cache */ }
     }
     return lget("votes:"+pid) || {};
   }
-  // castVote: read-modify-write the local optimistic copy + dispatch
+  // castVote: optimistic local write, then commit the single voter row directly.
+  // `payload.voterKey` and `payload.entry` are precomputed by the caller (the
+  // responder), because the voterKey/entry shape now varies (token vs central).
   async function castVote(payload){
-    // payload conforms to OPS cast-vote shape exactly.
     const pid = payload.pollId;
+    const key = payload.voterKey;
+    const entry = payload.entry;
+    // optimistic local cache so a failed PUT never loses the user's picks
     const cache = lget("votes:"+pid) || {};
-    const key = payload.guest
-      ? "guest:"+slugify(payload.name)
-      : payload.rosterId;
-    cache[key] = {
-      name: payload.name, zoneId: payload.zoneId,
-      responses: payload.responses, guest: !!payload.guest,
-      updatedAt: new Date().toISOString()
-    };
+    cache[key] = entry;
     lset("votes:"+pid, cache);
-    if(sharedMode) return await GHIO.dispatch(payload);
-    return { ok:false, local:true };
+    if(!sharedMode) return { ok:false, local:true };
+    try{
+      const merged = await GHIO.upsertVoter(pid, key, entry);
+      lset("votes:"+pid, merged);            // adopt the server's view (still has our row)
+      return { ok:true };
+    }catch(e){
+      return { ok:false, status:e && e.status, error:e };
+    }
   }
   // merge fetched votes into local cache without dropping in-flight local key
   function mergeVotes(pid, remote, protectKey){
@@ -388,10 +526,17 @@ const Store = (() => {
     lset("votes:"+pid, merged);
     return merged;
   }
+  // deletePoll: DELETE poll.json + votes.json via the Contents API (CHANGE 5).
   async function deletePoll(pid){
     ldel("poll:"+pid); ldel("votes:"+pid);
-    if(sharedMode) return await GHIO.dispatch({ op:"delete-poll", pollId:pid });
-    return { ok:false, local:true };
+    if(!sharedMode) return { ok:false, local:true };
+    try{
+      await GHIO.ghDeleteFile(GHIO.votesJsonPath(pid), "delete-poll votes: "+pid);
+      await GHIO.ghDeleteFile(GHIO.pollJsonPath(pid),  "delete-poll: "+pid);
+      return { ok:true };
+    }catch(e){
+      return { ok:false, status:e && e.status, error:e };
+    }
   }
 
   return { get, set, del, list,
@@ -416,6 +561,11 @@ async function sha256Hex(str){
   const bytes = new TextEncoder().encode(str);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+// loose-but-sane email syntax check — block voting until this passes (CHANGE 2).
+function isValidEmail(s){
+  s = String(s||"").trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 function slugify(s){
   // MUST stay byte-identical to slugifyName() in scripts/ingest.mjs so the guest
@@ -472,6 +622,15 @@ function nearestWeekdayDate(y,m,d,target,tz){
   return {y,m,d};
 }
 const fmtMin = m => String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");
+
+// numeric calendar Y/M/D of a UTC instant in a given zone (derived accessor;
+// does not touch the verified tz engine). Used by the availability grid.
+function localPartsFull(date, tz){
+  const dtf = new Intl.DateTimeFormat("en-CA",{timeZone:tz,
+    year:"numeric",month:"2-digit",day:"2-digit"});
+  const p={}; for(const x of dtf.formatToParts(date)) if(x.type!=="literal") p[x.type]=x.value;
+  return { y:+p.year, m:+p.month, d:+p.day };
+}
 
 /* comfort classification: work | edge (shoulder) | off (night) */
 function classify(localMin, z){
@@ -845,7 +1004,7 @@ function viewPoll(){
   <div class="panel">
     <h2>Publish &amp; invite links</h2>
     <p class="note">${sharedMode
-      ? "Publishing generates a poll id and a private token per person, then fires a save-poll to GitHub. Share each link with the matching person."
+      ? "Publishing generates a poll id and a private token per person, then commits poll.json straight to the poll-data branch (~1-2s). Share each per-person link, or the one central link, with people."
       : "Local mode: publishing generates the poll + invite links locally so you can preview them. Deploy to GitHub to collect real votes."}</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button class="btn" id="publishPoll">${state.invites?"Re-publish poll":"Create / publish poll"}</button>
@@ -864,15 +1023,26 @@ function renderInvitePanel(){
       <span class="lnk" title="${esc(l.url)}">${esc(l.url)}</span>
       <button class="btn ghost" data-copyone="${esc(l.url)}">Copy</button>
     </div>`).join("");
+  // central "anyone" link (CHANGE 2) — no &who/&t. Whoever opens it is asked
+  // for name + email; the email is stored only as a private hash.
+  const centralUrl = inv.centralUrl || (`${pagesBase}#poll=${encodeURIComponent(inv.pollId)}`);
+  const centralRow = `
+    <div class="invite-row" style="border-color:var(--accent);background:var(--accent-bg)">
+      <span class="who">Central link (anyone)</span>
+      <span class="lnk" title="${esc(centralUrl)}">${esc(centralUrl)}</span>
+      <button class="btn ghost" data-copyone="${esc(centralUrl)}" id="copyCentral">Copy central link</button>
+    </div>`;
   return `
   <div class="invite-list">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
       <span class="pill">poll ${esc(inv.pollId)}</span>
       <button class="btn ghost" id="copyAll">Copy all invite links</button>
     </div>
+    ${centralRow}
     ${rows}
-    <p class="storage-note" style="margin-top:8px">Each link contains a one-time private token. Anyone with a
-      person's link can answer as that person, so send links individually (the token is only the hash on GitHub).</p>
+    <p class="storage-note" style="margin-top:8px">Each per-person link contains a one-time private token. Anyone with a
+      person's link can answer as that person, so send those individually. The <b>central link</b> is safe to forward
+      to anyone — it asks each responder for their name + email (the email is stored only as a private hash, never shown).</p>
   </div>`;
 }
 
@@ -968,14 +1138,16 @@ async function publishPoll(){
   };
 
   const res = await Store.savePoll(poll);
-  state.invites = { pollId, links };
+  // central "anyone" link = the responder URL WITHOUT &who/&t (CHANGE 2)
+  const centralUrl = `${pagesBase}#poll=${encodeURIComponent(pollId)}`;
+  state.invites = { pollId, links, centralUrl };
   await Store.set("currentPollId", pollId);
   await Store.set("invites:"+pollId, state.invites);
 
   if(stateEl){
     stateEl.textContent = sharedMode
-      ? (res.ok ? "Published ✓ — accepted by GitHub (data appears after the Action runs)."
-                : "Dispatch failed (HTTP "+(res.status||"?")+"). Check the token/repo; links generated locally.")
+      ? (res.ok ? "Published ✓ — committed to the poll-data branch. Links are live now."
+                : "Couldn't commit poll.json (HTTP "+(res.status||"?")+"). Check the token/repo; links generated locally.")
       : "Generated locally (local mode — not sent to GitHub).";
   }
   render();
@@ -983,13 +1155,82 @@ async function publishPoll(){
 
 async function deleteCurrentPoll(){
   if(!state.pollId) return;
-  if(!confirm("Delete this poll and all its votes? This fires a delete-poll to GitHub and clears local copies.")) return;
+  if(!confirm("Delete this poll and all its votes? This deletes poll.json + votes.json from the poll-data branch and clears local copies.")) return;
   const pid = state.pollId;
   await Store.deletePoll(pid);
   await Store.del("invites:"+pid);
   await Store.del("currentPollId");
   state.pollId=null; state.invites=null; state.votes={};
   render();
+}
+
+/* ---- CHANGE 3 (organizer): aggregate "No" voters' weekly availability ----
+   For every voter entry that carries `availability`, convert each free LOCAL
+   hour into the poll's REFERENCE zone and tally how many people are free at
+   each ref-zone hour per day. Render a readable heat strip + best hour/day. */
+function availabilityAggPanel(poll, votes){
+  const refTz = poll.refTz;
+  // collect (tz, availability-map) for every respondent who submitted one
+  const contributors = Object.values(votes||{})
+    .filter(v => v && v.availability && Object.keys(v.availability).length)
+    .map(v => ({ tz: v.tz || refTz, avail: v.availability }));
+  if(!contributors.length) return "";
+
+  // gather the union of ref-zone day ISOs present across respondents
+  const dayCount = {};   // refDateISO -> { [refHour]: count }
+  const dayMeta = {};    // refDateISO -> {y,m,d}
+  contributors.forEach(c=>{
+    Object.entries(c.avail).forEach(([dISO, hours])=>{
+      const [Y,M,D] = dISO.split("-").map(Number);
+      (hours||[]).forEach(h=>{
+        // local free hour -> UTC instant -> ref-zone hour (approx near DST/date edges)
+        const utc = zonedWallToUtc(Y, M, D, h, 0, c.tz);
+        const rp = localPartsFull(utc, refTz);
+        const refHour = localParts(utc, refTz).hh;            // "07".."23"
+        const refDISO = `${rp.y}-${String(rp.m).padStart(2,"0")}-${String(rp.d).padStart(2,"0")}`;
+        dayCount[refDISO] = dayCount[refDISO] || {};
+        const hk = parseInt(refHour,10);
+        dayCount[refDISO][hk] = (dayCount[refDISO][hk]||0) + 1;
+        dayMeta[refDISO] = { y:rp.y, m:rp.m, d:rp.d };
+      });
+    });
+  });
+
+  const H0=7, H1=20;   // display window 07..20 ref-zone
+  const dayISOs = Object.keys(dayCount).sort();
+  if(!dayISOs.length) return "";
+
+  const rows = dayISOs.map(dISO=>{
+    const meta = dayMeta[dISO];
+    const noon = zonedWallToUtc(meta.y, meta.m, meta.d, 12, 0, refTz);
+    const lp = localParts(noon, refTz);
+    const counts = dayCount[dISO];
+    const maxC = Math.max(0, ...Object.values(counts));
+    let strip = "";
+    for(let h=H0; h<=H1; h++){
+      const c = counts[h]||0;
+      const best = c>0 && c===maxC;
+      strip += `<div class="cellh${best?' best':''}" title="${String(h).padStart(2,"0")}:00 — ${c} free">${c||""}</div>`;
+    }
+    const bestHours = [];
+    if(maxC>0) for(let h=H0; h<=H1; h++) if((counts[h]||0)===maxC) bestHours.push(String(h).padStart(2,"0")+":00");
+    return `
+      <div class="av-row">
+        <span class="av-dlabel">${lp.wd} ${lp.day} ${lp.mon}</span>
+        <div class="heat">${strip}</div>
+        ${bestHours.length?`<span class="av-besttag">best: ${bestHours.join(", ")} (${maxC})</span>`:''}
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="panel">
+      <h2>When the “No” voters are free</h2>
+      <p class="note">Aggregated from respondents who shared their weekly availability. Columns are hours
+        ${String(H0).padStart(2,"0")}:00–${String(H1).padStart(2,"0")}:00 in <b>${esc(refTz.split("/").pop())}</b>;
+        each number is how many people are free then. The outlined cell is the best hour that day.
+        Conversion from each person's zone is approximate around date boundaries.</p>
+      ${rows}
+    </div>`;
 }
 
 /* ---- Results (organizer reads votes.json) --------------------------- */
@@ -1033,11 +1274,13 @@ function viewResults(){
     </div>`;
   }).join("");
 
-  // awaiting computed from roster BY rosterId (not name)
-  const responded = new Set(Object.keys(votes).filter(k=>!k.startsWith("guest:")));
+  // awaiting computed from roster BY rosterId (not name). Non-roster keys are
+  // either legacy "guest:" rows or central "c:" rows (CHANGE 2).
+  const isRosterKey = k => !k.startsWith("guest:") && !k.startsWith("c:");
+  const responded = new Set(Object.keys(votes).filter(isRosterKey));
   const awaiting = roster.filter(r=>!responded.has(r.rosterId||r.id)).map(r=>r.name);
   const respondedNames = roster.filter(r=>responded.has(r.rosterId||r.id)).map(r=>r.name);
-  const guests = Object.entries(votes).filter(([k])=>k.startsWith("guest:")).map(([,v])=>v.name);
+  const guests = Object.entries(votes).filter(([k])=>!isRosterKey(k)).map(([,v])=>v.name);
 
   const awaitingBlock = `
     <div class="panel">
@@ -1059,10 +1302,11 @@ function viewResults(){
       <button class="btn ghost" id="refreshResults">Refresh</button>
     </div>
     <p class="note">Tally from votes.json. "Leading" = most yes-votes (maybe counts half).
-      ${sharedMode?"Auto-refreshes every ~12s while this tab is open.":"Local mode — shows your local optimistic copy."}</p>
+      ${sharedMode?"Auto-refreshes every ~5s while this tab is open.":"Local mode — shows your local optimistic copy."}</p>
     ${slots.length?resultCards:'<p class="note">No slots.</p>'}
   </div>
-  ${awaitingBlock}`;
+  ${awaitingBlock}
+  ${availabilityAggPanel(poll, votes)}`;
 }
 function lcache(k){ try{ const v=localStorage.getItem("czmc:"+k); return v?JSON.parse(v):null; }catch(e){ return null; } }
 
@@ -1071,7 +1315,7 @@ function wireResults(){
   document.getElementById("refreshResults")?.addEventListener("click", refreshResults);
   if(resultsTimer){ clearInterval(resultsTimer); resultsTimer=null; }
   if(sharedMode && state.pollId){
-    resultsTimer = setInterval(()=>{ if(view==="results") refreshResults(); else { clearInterval(resultsTimer); resultsTimer=null; } }, 12000);
+    resultsTimer = setInterval(()=>{ if(view==="results") refreshResults(); else { clearInterval(resultsTimer); resultsTimer=null; } }, 5000);
   }
 }
 async function refreshResults(){
@@ -1158,15 +1402,20 @@ function wireSetup(){
    ==================================================================== */
 const Responder = (() => {
   let poll=null, pollId=null, rawToken=null, rosterId=null;
-  let me=null;          // {name, zoneId, responses, guest}
+  let me=null;          // {name, email, zoneId, responses, guest, availability, ...}
   let myZoneTz=null;
   let pollTimer=null;
   let saving=false;
+  let showAvail=false;  // whether the weekly-availability grid is revealed (CHANGE 3)
+
+  // localStorage key for this browser's own raw email per poll (NEVER committed).
+  function emailLSKey(){ return "myemail:"+pollId; }
 
   async function start(h){
     pollId = h.poll;
     rawToken = h.t || null;        // kept in memory only
     rosterId = h.who || null;
+    showAvail = false;
 
     // strip token (and who) from the VISIBLE url; keep token in memory
     try{
@@ -1186,8 +1435,12 @@ const Responder = (() => {
       return;
     }
 
-    // resolve identity
+    // A responder is "verified" only with BOTH a roster &who AND a &t token.
+    // Without a valid token (central link, forwarded link, manual pick) they
+    // go through the central entry form and MUST supply name + email (CHANGE 2).
     const rosterEntry = rosterId ? (poll.roster||[]).find(r=>r.rosterId===rosterId) : null;
+    const verified = !!(rosterEntry && rawToken);
+
     const detected = detectTz();
     // detected zone -> match to a poll zone, else use roster's zone, else first
     let matchedZone = (poll.zones||[]).find(z=>z.tz===detected);
@@ -1195,15 +1448,21 @@ const Responder = (() => {
       : (rosterEntry ? rosterEntry.zoneId : (poll.zones?.[0]?.id));
 
     // hydrate any in-progress local vote for this identity
-    const localKey = rosterEntry ? rosterEntry.rosterId : null;
+    const localKey = verified ? rosterEntry.rosterId : null;
     const cache = lcache("votes:"+pollId) || {};
     const prior = localKey ? cache[localKey] : null;
 
+    // re-use a previously typed email from THIS browser (raw, local-only).
+    const priorEmail = lcache(emailLSKey()) || "";
+
     me = {
       name: rosterEntry ? rosterEntry.name : (prior?.name || ""),
+      email: priorEmail,                 // raw, local-only; never committed
       zoneId: prior?.zoneId || defaultZoneId,
       responses: prior?.responses ? {...prior.responses} : {},
-      guest: !rosterEntry   // guest until a roster identity is chosen
+      availability: prior?.availability ? {...prior.availability} : null,
+      guest: !verified,                  // guest/central until a verified identity
+      viaCentral: !verified              // central path => email required
     };
 
     render();
@@ -1212,6 +1471,90 @@ const Responder = (() => {
 
   function myZone(){
     return (poll.zones||[]).find(z=>z.id===me.zoneId) || poll.zones?.[0];
+  }
+
+  // --- CHANGE 3: which days the availability grid should cover -----------
+  // meetingDateISO = earliest candidate slot's UTC. In the poll's reference
+  // zone, take Mon–Fri of the week containing that date. If the meeting day
+  // is Thu(4)/Fri(5), also append next week's Mon–Fri (little of this week
+  // is left to reschedule into). Each day = its ref-zone calendar date.
+  function availabilityDays(){
+    const refTz = poll.refTz;
+    const slots = (poll.slots||[]);
+    if(!slots.length) return [];
+    const earliest = slots.map(s=>s.utc).sort()[0] || poll.meetingDateISO;
+    if(!earliest) return [];
+    const md = new Date(earliest);
+    // ref-zone calendar date of the meeting
+    const lp = localPartsFull(md, refTz);
+    const meetWd = refWeekday(lp.y, lp.m, lp.d, refTz);  // 0=Sun..6=Sat
+    // step back to Monday of that ref-zone week
+    const backToMon = (meetWd === 0) ? 6 : (meetWd - 1);
+    const days = [];
+    const pushWeek = (startY,startM,startD)=>{
+      for(let i=0;i<5;i++){                       // Mon..Fri
+        const dt = new Date(Date.UTC(startY, startM-1, startD+i));
+        const y=dt.getUTCFullYear(), m=dt.getUTCMonth()+1, d=dt.getUTCDate();
+        const iso = `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+        days.push({ iso, y, m, d });
+      }
+    };
+    // Monday of the meeting week (in plain UTC date arithmetic on the ref date)
+    pushWeek(lp.y, lp.m, lp.d - backToMon);
+    if(meetWd === 4 || meetWd === 5){             // Thu/Fri => add next week too
+      pushWeek(lp.y, lp.m, lp.d - backToMon + 7);
+    }
+    // label each day with weekday + date in the ref zone
+    return days.map(day=>{
+      const noonUtc = zonedWallToUtc(day.y, day.m, day.d, 12, 0, refTz);
+      const dlp = localParts(noonUtc, refTz);
+      return { ...day, label:`${dlp.wd} ${dlp.day} ${dlp.mon}` };
+    });
+  }
+
+  const AVAIL_H_START = 7, AVAIL_H_END = 20;   // hours 07..20 inclusive
+
+  // Build the weekly availability grid (rows = days, cols = hours in MY zone).
+  function availabilityGridHtml(){
+    const days = availabilityDays();
+    if(!days.length) return "";
+    const tz = myZoneTz;
+    me.availability = me.availability || {};
+    let head = `<th class="av-daycol">Day (${esc(tz.split("/").pop())})</th>`;
+    for(let h=AVAIL_H_START; h<=AVAIL_H_END; h++) head += `<th class="av-hr">${String(h).padStart(2,"0")}</th>`;
+    let body = "";
+    days.forEach(day=>{
+      const free = new Set(me.availability[day.iso] || []);
+      let row = `<td class="av-daycol">${esc(day.label)}</td>`;
+      for(let h=AVAIL_H_START; h<=AVAIL_H_END; h++){
+        const on = free.has(h);
+        // not color-only: free cells carry a check glyph + "free" text
+        row += `<td class="av-cell ${on?'av-free':'av-busy'}" data-avday="${day.iso}" data-avh="${h}"
+          role="button" tabindex="0" aria-pressed="${on}">${on?'✓':''}</td>`;
+      }
+      body += `<tr>${row}</tr>`;
+    });
+    return `
+      <div class="panel" id="availPanel">
+        <h2>When ARE you free?</h2>
+        <p class="note">Tap the hours you're free (your local time, ${esc(tz.split("/").pop())}). The organizer
+          uses this to find an alternative time. Empty = busy; <b>✓ green = free</b>.</p>
+        <div class="av-scroll">
+          <table class="avgrid">
+            <thead><tr>${head}</tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+        <p class="storage-note" style="margin-top:8px">Free = ✓ filled green · Busy = empty. Stored per day as the
+          hours you marked free.</p>
+      </div>`;
+  }
+
+  // true when the responder has answered "no" on every candidate slot.
+  function allNo(){
+    const slots = (poll.slots||[]);
+    if(!slots.length) return false;
+    return slots.every(s => (me.responses||{})[s.id] === "no");
   }
 
   function organizerName(){
@@ -1225,14 +1568,18 @@ const Responder = (() => {
 
     const rosterEntry = rosterId ? (poll.roster||[]).find(r=>r.rosterId===rosterId) : null;
 
+    // verified == arrived with a valid roster &who AND a &t token. Those keep
+    // the original token flow (no email). Everyone else is "central" (CHANGE 2).
+    const verified = !!(rosterEntry && rawToken);
+
     // identity block
     let identHtml;
-    if(rosterEntry){
+    if(verified){
       identHtml = `
         <p class="who-line">Responding as <b>${esc(me.name)}</b>
           — <button class="link" id="switchWho">not you? switch</button></p>`;
     } else if((poll.roster||[]).length){
-      // name-select from roster fallback when no &who
+      // name-select from roster fallback when no valid token
       const opts = (poll.roster||[]).map(r=>`<option value="${esc(r.rosterId)}" ${me.rosterPick===r.rosterId?"selected":""}>${esc(r.name)}</option>`).join("");
       identHtml = `
         <label class="fld">Who are you?</label>
@@ -1241,16 +1588,29 @@ const Responder = (() => {
           ${opts}
           <option value="__guest__" ${me.guest&&me.name?"selected":""}>I'm not on the list (guest)</option>
         </select>
-        <div id="guestNameWrap" class="${me.guest?'':'hide'}" style="margin-top:10px">
-          <label class="fld">Your name (guest)</label>
-          <input type="text" id="guestName" value="${esc(me.guest?me.name:'')}" placeholder="Type your name">
-          <div class="who-guest">You'll be recorded as a guest — not on the invite list.</div>
+        <div id="guestNameWrap" style="margin-top:10px">
+          <label class="fld">Your name</label>
+          <input type="text" id="guestName" value="${esc(me.name||'')}" placeholder="Type your name">
         </div>`;
     } else {
       identHtml = `
         <label class="fld">Your name</label>
-        <input type="text" id="guestName" value="${esc(me.name)}" placeholder="Type your name">
-        <div class="who-guest">You'll be recorded as a guest — not on the invite list.</div>`;
+        <input type="text" id="guestName" value="${esc(me.name)}" placeholder="Type your name">`;
+    }
+
+    // CHANGE 2 — central voters MUST supply a syntactically valid email.
+    // The raw email lives ONLY in this browser's localStorage; the committed
+    // vote stores a SHA-256 hash, never the address.
+    let emailHtml = "";
+    if(me.viaCentral){
+      const emailVal = esc(me.email||"");
+      const bad = (me.email||"").trim() && !isValidEmail(me.email);
+      emailHtml = `
+        <label class="fld" style="margin-top:12px">Email <span style="color:var(--off)">(required)</span></label>
+        <input type="email" id="respEmail" value="${emailVal}" placeholder="you@example.com" autocomplete="email">
+        ${bad?`<div class="email-err" id="emailErr">Enter a valid email to continue.</div>`:`<div class="email-err hide" id="emailErr"></div>`}
+        <div class="central-notice">Your name is shared with the organizer; your email is stored only as a
+          private hash and is never shown to anyone.</div>`;
     }
 
     const slotHtml = slots.map(s=>{
@@ -1280,6 +1640,22 @@ const Responder = (() => {
       <select id="respZone">${(poll.zones||[]).map(z=>
         `<option value="${z.id}" ${z.id===me.zoneId?"selected":""}>${esc(z.label)}</option>`).join("")}</select>`;
 
+    // CHANGE 3 — reveal the availability grid when the user marked "no" on
+    // everything, or clicked the always-present "None of these work" link.
+    const wantAvail = showAvail || allNo();
+    const availLink = `
+      <p style="margin-top:14px"><button class="link" id="noneWork">None of these work — share when you ARE free</button></p>`;
+    const availHtml = wantAvail ? availabilityGridHtml() : "";
+
+    // privacy/trust line — accurate for both token and central voters.
+    const trustLine = me.viaCentral
+      ? `Who can see this: your <b>name</b> and your Yes/Maybe/No answers are committed to a public GitHub
+         branch for this poll. Your <b>email is stored only as a private hash</b> (never the address, never shown).
+         ${sharedMode?"":"(Local preview — nothing is sent anywhere.)"}`
+      : `Who can see this: your name and your Yes/Maybe/No answers are committed to a public GitHub branch for
+         this poll, visible to anyone with the repo link. No email is collected for token links.
+         ${sharedMode?"":"(Local preview — nothing is sent anywhere.)"}`;
+
     rootEl().innerHTML = `
     <header class="masthead">
       <div>
@@ -1291,19 +1667,24 @@ const Responder = (() => {
 
     <div class="panel">
       ${identHtml}
+      ${emailHtml}
       ${zoneSel}
     </div>
 
     <div class="panel">
       <h2>Which of these work for you?</h2>
       ${slots.length?slotHtml:'<p class="note">No candidate times in this poll.</p>'}
+      ${availLink}
+    </div>
+
+    ${availHtml}
+
+    <div class="panel">
       <div class="savebar">
         <button class="btn" id="saveVote" style="width:100%">Save my answers</button>
         <div id="saveState" class="save-state"></div>
       </div>
-      <p class="trust">Who can see this: your name and your Yes/Maybe/No answers are committed to a
-        public GitHub branch for this poll, visible to anyone with the repo link. Your email is never
-        collected or sent. ${sharedMode?"":"(Local preview — nothing is sent anywhere.)"}</p>
+      <p class="trust">${trustLine}</p>
     </div>`;
 
     wire(slots);
@@ -1311,24 +1692,39 @@ const Responder = (() => {
 
   function wire(slots){
     document.getElementById("switchWho")?.addEventListener("click", ()=>{
-      // drop the resolved identity, let them pick / go guest
+      // drop the resolved identity -> fall into the central form (email required)
       rosterId=null; rawToken=null;
-      me.guest=true; me.name=""; me.rosterPick=null;
+      me.guest=true; me.viaCentral=true; me.name=""; me.rosterPick=null;
       render();
     });
 
     const pickWho=document.getElementById("pickWho");
     if(pickWho) pickWho.addEventListener("change", e=>{
       const v=e.target.value;
+      // either way this is a token-less (central) responder: email required.
+      me.viaCentral=true; rawToken=null;
       if(v==="__guest__"){ me.guest=true; me.name=""; me.rosterPick=null; rosterId=null; }
       else if(v){
         const r=(poll.roster||[]).find(x=>x.rosterId===v);
-        me.guest=false; me.rosterPick=v; rosterId=v; rawToken=null; // no token when picked manually
+        me.guest=true; me.rosterPick=v; rosterId=v;   // no token -> recorded as central
         me.name=r?r.name:"";
-      } else { me.rosterPick=null; }
+      } else { me.rosterPick=null; me.name=""; }
       render();
     });
     document.getElementById("guestName")?.addEventListener("input", e=>{ me.name=e.target.value; });
+
+    // CHANGE 2 — keep the raw email in memory + local-only; never committed.
+    const emailEl=document.getElementById("respEmail");
+    if(emailEl) emailEl.addEventListener("input", e=>{
+      me.email=e.target.value;
+      Store.set(emailLSKey(), me.email);              // remember for re-edit (this browser only)
+      const err=document.getElementById("emailErr");
+      if(err){
+        const bad=me.email.trim() && !isValidEmail(me.email);
+        err.textContent = bad ? "Enter a valid email to continue." : "";
+        err.classList.toggle("hide", !bad);
+      }
+    });
 
     document.getElementById("respZone")?.addEventListener("change", e=>{ me.zoneId=e.target.value; render(); });
 
@@ -1338,43 +1734,106 @@ const Responder = (() => {
         me.responses=me.responses||{};
         me.responses[sid] = (me.responses[sid]===r)? null : r;
         if(!me.responses[sid]) delete me.responses[sid];
-        // re-render just the segment states (cheap full re-render keeps it simple)
+        // re-render (also auto-reveals the availability grid once all are "no")
         render();
+      });
+    });
+
+    // CHANGE 3 — "None of these work" reveals the weekly availability grid.
+    document.getElementById("noneWork")?.addEventListener("click", ()=>{
+      showAvail=true; render();
+      document.getElementById("availPanel")?.scrollIntoView({behavior:"smooth",block:"start"});
+    });
+
+    // availability cell toggles (click + keyboard).
+    function toggleAvail(td){
+      const iso=td.dataset.avday, h=parseInt(td.dataset.avh,10);
+      me.availability=me.availability||{};
+      const set=new Set(me.availability[iso]||[]);
+      if(set.has(h)) set.delete(h); else set.add(h);
+      me.availability[iso] = [...set].sort((a,b)=>a-b);
+      if(!me.availability[iso].length) delete me.availability[iso];
+      // toggle this cell in place (avoid a full re-render that loses scroll)
+      const on=set.has(h);
+      td.className = "av-cell "+(on?"av-free":"av-busy");
+      td.textContent = on?"✓":"";
+      td.setAttribute("aria-pressed", String(on));
+    }
+    document.querySelectorAll(".av-cell").forEach(td=>{
+      td.addEventListener("click", ()=>toggleAvail(td));
+      td.addEventListener("keydown", e=>{
+        if(e.key===" "||e.key==="Enter"){ e.preventDefault(); toggleAvail(td); }
       });
     });
 
     document.getElementById("saveVote")?.addEventListener("click", save);
   }
 
+  // true once we have a verified token identity (roster &who + &t).
+  function isVerified(){ return !!(rosterId && rawToken && !me.viaCentral); }
+
+  // The voterKey this responder writes under, mirroring castVote's keying:
+  //  - verified token vote  -> rosterId
+  //  - central/guest vote   -> "c:"+emailHash.slice(0,16)  (CHANGE 2)
+  // The async form computes the central hash; cachedCentralKey memoises it so
+  // the (sync) poller can reuse it without recomputing.
+  let cachedCentralKey=null, cachedCentralEmail=null;
+  async function voterKeyForMe(){
+    if(isVerified()) return rosterId;
+    const norm=(me.email||"").trim().toLowerCase();
+    if(cachedCentralKey && cachedCentralEmail===norm) return cachedCentralKey;
+    const h=await sha256Hex(norm);
+    cachedCentralKey="c:"+h.slice(0,16); cachedCentralEmail=norm;
+    return cachedCentralKey;
+  }
+
   async function save(){
     if(saving) return;
-    const stEl=document.getElementById("saveState");
     const name=(me.name||"").trim();
-    if(!name){ setState("err","Add your name first so your answer is attributed."); document.getElementById("guestName")?.focus(); return; }
+    if(!name){ setState("err","Add your name first so your answer is attributed.");
+      document.getElementById("guestName")?.focus(); return; }
+    // CHANGE 2 — central voters must enter a syntactically valid email first.
+    if(me.viaCentral && !isValidEmail(me.email)){
+      setState("err","Enter a valid email to vote — it's stored only as a private hash, never shown.");
+      document.getElementById("respEmail")?.focus();
+      const err=document.getElementById("emailErr"); if(err){ err.textContent="Enter a valid email to continue."; err.classList.remove("hide"); }
+      return;
+    }
     if(!Object.keys(me.responses||{}).length){ setState("err","Pick Yes / Maybe / No on at least one option."); return; }
 
     saving=true; setState("", "Saving…"); document.getElementById("saveVote").disabled=true;
 
-    // build cast-vote payload per contract.
-    // A named (non-guest) vote REQUIRES the per-person token — the ingest Action rejects
-    // token-less named votes. So a manual roster pick (no &t token) is recorded as an
-    // unverified guest under their own name, matching the honor-system posture.
-    const isGuest = me.guest || !rosterId || !rawToken;
-    const payload = {
-      op:"cast-vote",
-      pollId: pollId,
-      rosterId: isGuest ? null : rosterId,
-      token: (!isGuest && rawToken) ? rawToken : undefined,
-      name: name,
-      zoneId: me.zoneId,
-      responses: { ...me.responses },
-      guest: !!isGuest
-    };
-    if(payload.token===undefined) delete payload.token;
+    const verified = isVerified();
+    const nowISO = new Date().toISOString();
+    let voterKey, entry;
 
-    // Store.castVote does optimistic local write + dispatch; surface the result.
+    if(verified){
+      // unchanged token-vote shape, keyed by rosterId. No email.
+      voterKey = rosterId;
+      entry = {
+        name, zoneId: me.zoneId, tz: myZoneTz,
+        responses: { ...me.responses }, guest:false,
+        updatedAt: nowISO
+      };
+    }else{
+      // central/guest vote: email hashed, raw email NEVER committed (CHANGE 2).
+      const emailHash = await sha256Hex((me.email||"").trim().toLowerCase());
+      voterKey = "c:"+emailHash.slice(0,16);
+      entry = {
+        name, zoneId: me.zoneId, tz: myZoneTz,
+        responses: { ...me.responses },
+        guest:true, viaCentral:true,
+        emailHash,                                   // NOT the raw email
+        updatedAt: nowISO
+      };
+    }
+    // CHANGE 3 — persist weekly availability if the responder supplied any.
+    if(me.availability && Object.keys(me.availability).length){
+      entry.availability = me.availability;
+    }
+
     let res;
-    try{ res = await Store.castVote(payload); }
+    try{ res = await Store.castVote({ pollId, voterKey, entry }); }
     catch(e){ res = { ok:false, error:e }; }
 
     document.getElementById("saveVote").disabled=false;
@@ -1401,13 +1860,13 @@ const Responder = (() => {
   function startPolling(){
     if(!sharedMode) return;
     if(pollTimer) clearInterval(pollTimer);
-    // reconcile from votes.json, but never discard the in-flight local selection
+    // reconcile from votes.json (~5s), but never discard the in-flight local key
     pollTimer=setInterval(async ()=>{
       const fresh = await Store.loadVotes(pollId);
-      const protectKey = (me.guest||!rosterId||!rawToken) ? ("guest:"+slugify(me.name)) : rosterId;
+      const protectKey = await voterKeyForMe();
       Store.mergeVotes(pollId, fresh, protectKey);   // keeps local optimistic copy
       // we do NOT re-render the responder over their in-progress picks; tally is hidden anyway.
-    }, 12000);
+    }, 5000);
   }
 
   return { start };
