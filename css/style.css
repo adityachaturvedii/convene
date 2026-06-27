@@ -238,6 +238,14 @@
   .av-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);
     border-radius:8px;margin-top:6px;overscroll-behavior-x:contain;}
   .av-scrollhint{font-size:11px;color:var(--muted);margin:6px 2px 0;display:none;}
+  /* scroll-needed detection nudge */
+  .av-scrollnudge{align-items:center;gap:8px;margin:2px 2px 8px;padding:7px 11px;border-radius:8px;
+    font-size:12.5px;font-weight:600;background:var(--accent-bg);color:var(--accent);
+    border:1px solid #bcd5de;border-radius:8px;}
+  .av-scrollnudge.done{background:var(--work-bg);color:#0a6f60;border-color:#bfe5dd;}
+  .av-scrollnudge .arr{display:inline-block;font-weight:800;animation:nudgeArrow 1s ease-in-out infinite;}
+  @keyframes nudgeArrow{0%,100%{transform:translateX(0)}50%{transform:translateX(6px)}}
+  .av-scroll.needscroll{box-shadow:inset -22px 0 16px -16px rgba(12,94,120,.5);}
   table.avgrid{border-collapse:separate;border-spacing:0;width:100%;min-width:720px;
     font-family:"IBM Plex Mono",monospace;}
   table.avgrid th,table.avgrid td{text-align:center;font-size:12px;font-weight:400;border:1px solid #EFF2F3;}

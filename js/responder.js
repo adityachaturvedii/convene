@@ -14,6 +14,8 @@ export const Responder = (() => {
   let saving=false;
   let submitted=false;
   let showAvail=false;
+  let availNeedsScroll=false;   // grid is wider than its container (hours off-screen)
+  let availScrollAcked=false;   // user has scrolled ~3 hours (or to the end)
 
   function emailLSKey(){ return "myemail:"+pollId; }
 
@@ -27,6 +29,7 @@ export const Responder = (() => {
 
     showAvail = false;
     submitted = false;
+    availScrollAcked = false;
 
     try{
       const clean = location.pathname + location.search + (pollId?("#poll="+encodeURIComponent(pollId)):"");
@@ -126,8 +129,8 @@ export const Responder = (() => {
         <h2>When are you free this week? <span style="color:var(--off);font-weight:600">(required)</span></h2>
         <p class="note">Tap every hour you're free (your local time, ${esc(tz.split("/").pop())}) — this is required so
           the organizer can find a time that works for everyone. Empty = busy; <b>✓ green = free</b>.</p>
-        <p class="av-scrollhint">↔ Scroll the grid sideways to see every hour.</p>
-        <div class="av-scroll">
+        <div class="av-scrollnudge" id="avNudge" style="display:none"></div>
+        <div class="av-scroll" id="avScroll" tabindex="0">
           <table class="avgrid">
             <thead><tr>${head}</tr></thead>
             <tbody>${body}</tbody>
@@ -316,6 +319,37 @@ export const Responder = (() => {
     });
 
     document.getElementById("saveVote")?.addEventListener("click", save);
+    setupAvailScroll();
+  }
+
+  // Detect whether the availability grid has hours off-screen and nudge the user to
+  // scroll. "Acknowledged" once they've scrolled ~3 hours (or reached the end).
+  function setupAvailScroll(){
+    const el = document.getElementById("avScroll");
+    const nudge = document.getElementById("avNudge");
+    if(!el) return;
+    function update(){
+      const ms = el.scrollWidth - el.clientWidth;          // px that can be scrolled
+      availNeedsScroll = ms > 4;
+      const ackThreshold = Math.min(132, ms);              // ~3 hours, or to the end if narrower
+      const sl = el.scrollLeft;
+      el.classList.toggle("needscroll", availNeedsScroll && sl < ms-2);
+      if(!availNeedsScroll || sl >= ackThreshold) availScrollAcked = true;
+      if(!nudge) return;
+      if(!availNeedsScroll){ nudge.style.display="none"; return; }
+      nudge.style.display = "flex";
+      if(availScrollAcked){
+        nudge.className = "av-scrollnudge done";
+        nudge.textContent = "✓ Good — now mark every hour you're free across all days.";
+      } else {
+        nudge.className = "av-scrollnudge";
+        nudge.innerHTML = '<span class="arr">→</span> More hours are off-screen — <b>scroll the grid sideways</b> to see &amp; mark them all.';
+      }
+    }
+    el.addEventListener("scroll", update, { passive:true });
+    window.addEventListener("resize", update, { passive:true });
+    update();
+    requestAnimationFrame(update);   // re-measure after layout settles
   }
 
   function isVerified(){ return !!(rosterId && rawToken && !me.viaCentral); }
@@ -346,6 +380,14 @@ export const Responder = (() => {
     if(!availCount){
       setState("err","Please mark when you're free this week — it's required. Tap the green hours below.");
       document.getElementById("availPanel")?.scrollIntoView({behavior:"smooth",block:"center"});
+      return;
+    }
+    // Nudge once if there are hours off-screen the user never scrolled to.
+    if(availNeedsScroll && !availScrollAcked){
+      setState("err","There are more hours to the right — scroll the availability grid across so you don't miss any free times.");
+      const sc=document.getElementById("avScroll");
+      sc?.scrollIntoView({behavior:"smooth",block:"center"});
+      const n=document.getElementById("avNudge"); if(n){ n.style.outline="2px solid var(--accent)"; setTimeout(()=>{ if(n) n.style.outline=""; },1200); }
       return;
     }
 
