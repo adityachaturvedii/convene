@@ -235,17 +235,23 @@
   .email-err{font-size:12px;color:var(--off);margin-top:4px;}
 
   /* availability grid (CHANGE 3, responder) */
-  .av-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;}
-  table.avgrid{border-collapse:collapse;width:100%;min-width:560px;font-family:"IBM Plex Mono",monospace;}
-  table.avgrid th,table.avgrid td{text-align:center;font-size:11.5px;font-weight:400;border:1px solid #EFF2F3;}
-  table.avgrid thead .av-hr{padding:6px 0 5px;color:var(--muted);font-size:10.5px;}
-  .av-daycol{position:sticky;left:0;background:var(--paper);text-align:left;padding:8px 12px;
-    min-width:120px;border-right:1px solid var(--line-strong)!important;
-    font-family:"IBM Plex Sans",sans-serif;font-size:12px;font-weight:600;z-index:2;}
-  td.av-cell{height:34px;min-width:30px;cursor:pointer;color:#0a6f60;font-weight:700;user-select:none;}
+  .av-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);
+    border-radius:8px;margin-top:6px;overscroll-behavior-x:contain;}
+  .av-scrollhint{font-size:11px;color:var(--muted);margin:6px 2px 0;display:none;}
+  table.avgrid{border-collapse:separate;border-spacing:0;width:100%;min-width:720px;
+    font-family:"IBM Plex Mono",monospace;}
+  table.avgrid th,table.avgrid td{text-align:center;font-size:12px;font-weight:400;border:1px solid #EFF2F3;}
+  table.avgrid thead .av-hr{padding:8px 0 7px;color:var(--muted);font-size:11px;min-width:44px;width:44px;}
+  .av-daycol{position:sticky;left:0;background:var(--paper);text-align:left;padding:10px 12px;
+    min-width:128px;width:128px;border-right:1px solid var(--line-strong)!important;
+    font-family:"IBM Plex Sans",sans-serif;font-size:12.5px;font-weight:600;z-index:2;}
+  td.av-cell{height:42px;min-width:44px;width:44px;cursor:pointer;color:#0a6f60;font-weight:700;
+    user-select:none;-webkit-tap-highlight-color:transparent;}
   td.av-busy{background:var(--panel);color:#c2cacf;}
   td.av-free{background:var(--work-bg);color:#0a6f60;box-shadow:inset 0 0 0 1px var(--work);}
+  td.av-cell:active{filter:brightness(.94);}
   td.av-cell:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;}
+  @media (max-width:640px){ .av-scrollhint{display:block;} td.av-cell{height:46px;} }
 
   /* organizer "No voters are free" heat strip (CHANGE 3) */
   .av-row{display:flex;align-items:center;gap:10px;margin:6px 0;flex-wrap:wrap;}
