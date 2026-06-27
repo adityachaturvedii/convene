@@ -1513,8 +1513,11 @@ function viewResults(){
     ? `<div class="res-hero"><div class="lead-k">★ Leading time</div>
         <div class="lead-t mono">${best.lp.wd} ${best.lp.hh}:${best.lp.mm} · <span style="font-size:15px;font-weight:500">${best.lp.day} ${best.lp.mon} ${esc(refTz.split("/").pop())}</span></div>
         <div class="lead-s">${best.y} yes${best.m?` · ${best.m} maybe`:""}${best.n?` · ${best.n} no`:""} — out of ${total} response${total===1?"":"s"}</div></div>`
-    : `<div class="res-hero empty"><div class="lead-k">No responses yet</div>
-        <div class="lead-s">Share your invite links (Poll &amp; invite) to start collecting answers.</div></div>`;
+    : (total>0
+        ? `<div class="res-hero empty"><div class="lead-k">${total} response${total===1?"":"s"} so far — no clear winner</div>
+            <div class="lead-s">Every answer so far is "No". You likely need different times — see who's free below.</div></div>`
+        : `<div class="res-hero empty"><div class="lead-k">No responses yet</div>
+            <div class="lead-s">Share your invite links (Poll &amp; invite) to start collecting answers.</div></div>`);
 
   const progress = invited ? `
     <div class="res-prog-wrap">
@@ -2199,7 +2202,7 @@ const Responder = (() => {
       ? `<div class="res-hero"><div class="lead-k">★ Leading so far</div>
           <div class="lead-t mono">${best.lp.wd} ${best.lp.hh}:${best.lp.mm} <span style="font-size:13px;font-weight:400;color:#0a6f60">your time</span></div>
           <div class="lead-s">${best.y} yes${best.m?` · ${best.m} maybe`:""} of ${total} response${total===1?"":"s"}</div></div>`
-      : "";
+      : (total>0 ? `<div class="res-hero empty"><div class="lead-k">${total} response${total===1?"":"s"} — all "No" so far</div><div class="lead-s">These times don't work for the group yet.</div></div>` : "");
     return `<div class="res-prog-lab" style="margin-bottom:10px"><b>${total}</b> ${total===1?"person has":"people have"} responded so far.</div>
       ${hero}${cards||'<p class="note">No votes yet.</p>'}`;
   }
